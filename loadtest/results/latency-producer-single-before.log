@@ -1,0 +1,6 @@
+# 2026-09-25 busy laptop, before the batching change was used (single enqueue); load avg ~2-10
+{'workers': 2, 'concurrency_per_worker': 50, 'target_rate': 200.0, 'achieved_submit_rate': 200.0, 'jobs': 4000, 'not_succeeded': 0, 'e2e_latency_ms': {50: 8.7, 95: 51.8, 99: 320.7}, 'e2e_latency_max_ms': 617.9, 'sdk_enqueue_latency_ms': {50: 7.2, 99: 402.1}}
+saved /home/chaitanya/Desktop/Growth/projects/distributed-job-platform/loadtest/out/latency-20260925T155219Z.json
+avail 6124
+{'workers': 4, 'concurrency_per_worker': 50, 'target_rate': 500.0, 'achieved_submit_rate': 480.2, 'jobs': 7500, 'not_succeeded': 0, 'e2e_latency_ms': {50: 22.1, 95: 39.3, 99: 259.0}, 'e2e_latency_max_ms': 480.7, 'sdk_enqueue_latency_ms': {50: 810.3, 99: 3451.5}}
+avail 5820

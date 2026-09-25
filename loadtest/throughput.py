@@ -13,6 +13,7 @@ Two modes:
 
     uv run python -m loadtest.throughput drain --jobs 20000 --workers 1 2 4 8
     uv run python -m loadtest.throughput latency --rate 500 --duration 20 --workers 4
+    uv run python -m loadtest.throughput latency --rate 500 --workers 4 --producer batch
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from sqlalchemy import text
@@ -135,9 +137,16 @@ async def latency(args: argparse.Namespace) -> Report:
         tasks: list[asyncio.Task[Any]] = []
         submit_lat: list[float] = []
 
-        async def submit(relay: Relay = relay, out: list[float] = submit_lat) -> None:
+        producer = (
+            relay.batching(args.max_batch, args.max_delay_ms) if args.producer == "batch" else None
+        )
+        enqueue = producer.enqueue if producer is not None else relay.enqueue
+
+        async def submit(
+            out: list[float] = submit_lat, enqueue: Callable[..., Awaitable[Any]] = enqueue
+        ) -> None:
             s = time.perf_counter()
-            await relay.enqueue("noop")
+            await enqueue("noop")
             out.append((time.perf_counter() - s) * 1000)
 
         for i in range(n):
@@ -147,6 +156,8 @@ async def latency(args: argparse.Namespace) -> Report:
             tasks.append(asyncio.create_task(submit()))
         await asyncio.gather(*tasks)
         achieved = n / (loop.time() - t0)
+        if producer is not None:
+            await producer.aclose()
         try:
             await wait_terminal(relay, n, timeout_s=300)
         finally:
@@ -156,6 +167,7 @@ async def latency(args: argparse.Namespace) -> Report:
         result = {
             "workers": workers,
             "concurrency_per_worker": args.concurrency,
+            "producer": args.producer,
             "target_rate": args.rate,
             "achieved_submit_rate": round(achieved, 1),
             "jobs": n,
@@ -184,6 +196,14 @@ def main() -> None:
     lt.add_argument("--duration", type=float, default=20)
     lt.add_argument("--workers", type=int, nargs="+", default=[4])
     lt.add_argument("--concurrency", type=int, default=50)
+    lt.add_argument(
+        "--producer",
+        choices=["single", "batch"],
+        default="single",
+        help="single: one enqueue() per job; batch: BatchingProducer (enqueue_many)",
+    )
+    lt.add_argument("--max-batch", type=int, default=200)
+    lt.add_argument("--max-delay-ms", type=float, default=5.0)
     args = parser.parse_args()
     report = asyncio.run(drain(args) if args.mode == "drain" else latency(args))
     print(f"saved {report.save()}")

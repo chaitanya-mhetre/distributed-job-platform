@@ -1,0 +1,3 @@
+# 2026-09-25T16:01:00Z commit dee7205 - enqueue step profile (64 concurrent enqueue(), closed loop, 2000 jobs)
+rate 833/s  INSERT p50 28.6 ms  p95 81.8 ms | XADD p50 2.1 ms  p95 3.4 ms | UPDATE p50 29.5 ms  p95 67.9 ms | total p50 57.2 ms  p95 130.0 ms
+rate 787/s  INSERT p50 28.4 ms  p95 93.8 ms | XADD p50 2.1 ms  p95 4.5 ms | UPDATE p50 31.6 ms  p95 72.0 ms | total p50 61.8 ms  p95 140.1 ms

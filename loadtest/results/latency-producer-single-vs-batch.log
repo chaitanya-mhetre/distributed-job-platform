@@ -1,0 +1,18 @@
+# 2026-09-25 busy laptop (load avg 5-8), single vs batch producer, commit dee7205
+# avail=6731MB load=5.23 :: --rate 200 --duration 20 --workers 2 --producer batch
+{'workers': 2, 'concurrency_per_worker': 50, 'producer': 'batch', 'target_rate': 200.0, 'achieved_submit_rate': 199.9, 'jobs': 4000, 'not_succeeded': 0, 'e2e_latency_ms': {50: 7.7, 95: 23.5, 99: 46.4}, 'e2e_latency_max_ms': 141.9, 'sdk_enqueue_latency_ms': {50: 11.2, 99: 35.8}}
+saved /home/chaitanya/Desktop/Growth/projects/distributed-job-platform/loadtest/out/latency-20260925T155747Z.json
+# avail=7052MB load=5.17 :: --rate 500 --duration 15 --workers 4 --producer single
+{'workers': 4, 'concurrency_per_worker': 50, 'producer': 'single', 'target_rate': 500.0, 'achieved_submit_rate': 360.0, 'jobs': 7500, 'not_succeeded': 0, 'e2e_latency_ms': {50: 20.4, 95: 99.2, 99: 182.8}, 'e2e_latency_max_ms': 392.9, 'sdk_enqueue_latency_ms': {50: 107.8, 99: 8360.6}}
+saved /home/chaitanya/Desktop/Growth/projects/distributed-job-platform/loadtest/out/latency-20260925T155813Z.json
+# avail=7100MB load=5.77 :: --rate 500 --duration 15 --workers 4 --producer batch
+{'workers': 4, 'concurrency_per_worker': 50, 'producer': 'batch', 'target_rate': 500.0, 'achieved_submit_rate': 499.6, 'jobs': 7500, 'not_succeeded': 0, 'e2e_latency_ms': {50: 10.0, 95: 14.2, 99: 140.5}, 'e2e_latency_max_ms': 340.3, 'sdk_enqueue_latency_ms': {50: 11.6, 99: 22.0}}
+saved /home/chaitanya/Desktop/Growth/projects/distributed-job-platform/loadtest/out/latency-20260925T155833Z.json
+# avail=7381MB load=5.43 :: --rate 200 --duration 20 --workers 2 --producer single
+{'workers': 2, 'concurrency_per_worker': 50, 'producer': 'single', 'target_rate': 200.0, 'achieved_submit_rate': 199.0, 'jobs': 4000, 'not_succeeded': 0, 'e2e_latency_ms': {50: 7.0, 95: 86.4, 99: 197.0}, 'e2e_latency_max_ms': 480.7, 'sdk_enqueue_latency_ms': {50: 5.8, 99: 248.7}}
+saved /home/chaitanya/Desktop/Growth/projects/distributed-job-platform/loadtest/out/latency-20260925T155908Z.json
+# avail=6806MB load=6.11 :: --rate 1000 --duration 15 --workers 4 --producer single
+# avail=6640MB load=8.49 :: --rate 1000 --duration 15 --workers 4 --producer batch
+{'workers': 4, 'concurrency_per_worker': 50, 'producer': 'batch', 'target_rate': 1000.0, 'achieved_submit_rate': 998.0, 'jobs': 15000, 'not_succeeded': 0, 'e2e_latency_ms': {50: 17.2, 95: 120.4, 99: 249.5}, 'e2e_latency_max_ms': 549.2, 'sdk_enqueue_latency_ms': {50: 16.9, 99: 43.3}}
+saved /home/chaitanya/Desktop/Growth/projects/distributed-job-platform/loadtest/out/latency-20260925T160005Z.json
+# single @1000/s: run crashed - sqlalchemy.exc.TimeoutError: QueuePool limit of size 24 overflow 0 reached, connection timed out, timeout 30.00 (reproduced twice)
