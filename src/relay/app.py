@@ -19,6 +19,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from relay import metrics
 from relay.broker import RedisBroker
 from relay.config import Settings
 from relay.db import make_engine, migrate
@@ -32,6 +33,10 @@ Handler = Callable[..., Coroutine[Any, Any, Any]]
 
 class UnknownJobTypeError(ValueError):
     pass
+
+
+class QueueFullError(RuntimeError):
+    """Backpressure: the target queue is deeper than settings.max_queue_depth."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,9 +146,15 @@ class Relay:
             timeout_s=timeout_s or (definition.timeout_s if definition else 60),
             idempotency_key=idempotency_key,
         )
+        if self.settings.max_queue_depth:
+            depth = await self.broker.redis.xlen(self.broker.keys.queue(new.priority))
+            if depth >= self.settings.max_queue_depth:
+                metrics.REJECTED.labels(new.priority.value).inc()
+                raise QueueFullError(f"queue {new.priority} has {depth} jobs waiting")
         job, created = await self.store.create(new)
         if created:
             await self.dispatch(job)
+            metrics.ENQUEUED.labels(job.type, job.priority.value).inc()
         return EnqueueResult(job, created)
 
     async def dispatch(self, job: Job) -> None:

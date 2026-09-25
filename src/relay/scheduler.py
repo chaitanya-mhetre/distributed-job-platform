@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from relay import metrics
 from relay.app import Relay
 from relay.recurring import latest_fire
 
@@ -114,6 +115,7 @@ class Scheduler:
                 extra={"scheduler_id": self.scheduler_id, "leader": leader},
             )
         self.is_leader = leader
+        metrics.LEADER.set(int(leader))
         return leader
 
     async def tick(self) -> TickResult:
@@ -122,6 +124,10 @@ class Scheduler:
         result.promoted = await self.promote()
         result.reclaimed = await self.reclaim()
         result.recurring = await self.enqueue_recurring()
+        metrics.PROMOTED.inc(result.promoted)
+        metrics.RECLAIMED.inc(result.reclaimed)
+        if self._ticks % 4 == 0:
+            await metrics.sample_queue_gauges(self.relay)
         if self._ticks % self.cfg.reconcile_every == 0:
             result.reconciled = await self.reconcile()
         return result

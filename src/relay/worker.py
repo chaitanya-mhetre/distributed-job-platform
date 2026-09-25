@@ -33,6 +33,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
+from relay import metrics
 from relay.app import Relay
 from relay.backoff import backoff_seconds
 from relay.broker import DEFAULT_WEIGHTS, Message, WeightedOrder
@@ -251,6 +252,7 @@ class Worker:
         store, broker = self.relay.store, self.relay.broker
         run_at = datetime.now(UTC) + timedelta(seconds=random.uniform(0.1, 0.5))  # noqa: S311
         job = await store.defer(msg.job_id, run_at)
+        metrics.DEFERRED.labels(msg.job_type).inc()
         if job is not None:
             await broker.schedule(job.id, job.type, job.priority, run_at)
         await broker.ack(msg)
@@ -269,6 +271,8 @@ class Worker:
             return
 
         entry = self._inflight[msg.job_id]
+        wait_s = (datetime.now(UTC) - job.run_at).total_seconds()
+        metrics.QUEUE_LATENCY.labels(job.priority.value).observe(max(0.0, wait_s))
         ctx = JobContext(job, self.worker_id, self.relay)
         started = time.monotonic()
         entry.task = asyncio.create_task(definition.fn(ctx, **job.payload))
@@ -338,6 +342,10 @@ class Worker:
                 attempt_outcome = "dead"
         await store.close_attempt(job.id, job.attempts, attempt_outcome, error, ms)
         await broker.ack(msg)
+        metrics.JOBS.labels(job.type, attempt_outcome).inc()
+        metrics.DURATION.labels(job.type).observe(ms / 1000)
+        if attempt_outcome in ("retry", "timeout") and job.attempts < job.max_attempts:
+            metrics.RETRIES.labels(job.type).inc()
         log.info(
             "job finished",
             extra={

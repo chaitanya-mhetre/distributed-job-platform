@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     namespace: str = "relay"
 
     api_key: str = ""
+    # Backpressure: reject new jobs (HTTP 503) once a queue holds this many entries. 0 = off.
+    # Growing queues are the symptom; rejecting early protects Redis memory and gives the
+    # producer a clear signal to slow down instead of silently piling up latency.
+    max_queue_depth: int = 100_000
     max_payload_bytes: int = 64 * 1024
     log_level: str = "INFO"
 
