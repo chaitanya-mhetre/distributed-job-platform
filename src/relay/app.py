@@ -13,7 +13,7 @@ the set of registered job types doubles as the allow-list of what the API accept
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -25,7 +25,7 @@ from relay.db import make_engine, migrate
 from relay.models import Job, JobStatus, Priority
 from relay.store import JobStore, NewJob
 
-Handler = Callable[..., Awaitable[Any]]
+Handler = Callable[..., Coroutine[Any, Any, Any]]
 
 
 class UnknownJobTypeError(ValueError):
@@ -148,3 +148,20 @@ class Relay:
 
     async def get(self, job_id: UUID) -> Job | None:
         return await self.store.get(job_id)
+
+    # --- operator actions ---------------------------------------------------------------
+
+    async def retry(self, job_id: UUID) -> Job | None:
+        """Manually re-run a failed or dead job with a fresh attempt budget."""
+        job = await self.store.mark_queued(job_id, reset_attempts=True)
+        if job is not None:
+            await self.dispatch(job)
+        return job
+
+    async def replay_dead_letter(self, entry_id: str) -> Job | None:
+        letter = await self.broker.get_dead_letter(entry_id)
+        if letter is None:
+            return None
+        job = await self.retry(letter.job_id)
+        await self.broker.delete_dead_letter(entry_id)
+        return job
