@@ -22,6 +22,7 @@ from uuid import UUID
 from relay.broker import RedisBroker
 from relay.config import Settings
 from relay.db import make_engine, migrate
+from relay.locks import LockManager
 from relay.models import Job, JobStatus, Priority
 from relay.recurring import validate_cron
 from relay.store import JobStore, NewJob, NewRecurring, RecurringJob
@@ -40,6 +41,8 @@ class JobDef:
     timeout_s: int = 60
     max_attempts: int = 3
     priority: Priority = Priority.DEFAULT
+    # at most this many jobs of this type run at once across *all* workers (None = no limit)
+    max_concurrent: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +57,7 @@ class Relay:
         self.registry: dict[str, JobDef] = {}
         self._store: JobStore | None = None
         self._broker: RedisBroker | None = None
+        self._locks: LockManager | None = None
 
     # --- registration -------------------------------------------------------------------
 
@@ -64,11 +68,14 @@ class Relay:
         timeout_s: int = 60,
         max_attempts: int = 3,
         priority: Priority | str = Priority.DEFAULT,
+        max_concurrent: int | None = None,
     ) -> Callable[[Handler], Handler]:
         def register(fn: Handler) -> Handler:
             if name in self.registry:
                 raise ValueError(f"job type {name!r} registered twice")
-            self.registry[name] = JobDef(name, fn, timeout_s, max_attempts, Priority(priority))
+            self.registry[name] = JobDef(
+                name, fn, timeout_s, max_attempts, Priority(priority), max_concurrent
+            )
             return fn
 
         return register
@@ -87,6 +94,12 @@ class Relay:
             self._broker = RedisBroker.from_url(self.settings.redis_url, self.settings.namespace)
         return self._broker
 
+    @property
+    def locks(self) -> LockManager:
+        if self._locks is None:
+            self._locks = LockManager(self.broker.redis, self.broker.keys)
+        return self._locks
+
     async def setup(self) -> None:
         """Run DB migrations and create the consumer groups. Safe to call repeatedly."""
         await migrate(self.store.engine)
@@ -96,6 +109,7 @@ class Relay:
         if self._broker is not None:
             await self._broker.close()
             self._broker = None
+            self._locks = None
         if self._store is not None:
             await self._store.engine.dispose()
             self._store = None
@@ -157,6 +171,24 @@ class Relay:
         job = await self.store.mark_queued(job_id, reset_attempts=True)
         if job is not None:
             await self.dispatch(job)
+        return job
+
+    async def cancel(self, job_id: UUID) -> Job | None:
+        """Cancel a job. Returns None if it doesn't exist or is already finished.
+
+        queued/scheduled: marked cancelled right away (a stale stream entry is skipped by the
+        worker, a delayed one is removed from the ZSET).
+        running: a flag is set; the worker cancels the handler's task within ~cancel_poll_s,
+        and the handler sees asyncio.CancelledError. The returned job still says 'running'.
+        """
+        job = await self.store.cancel_if_pending(job_id)
+        if job is not None:
+            await self.broker.unschedule(job_id)
+            return job
+        job = await self.store.get(job_id)
+        if job is None or job.status.is_terminal:
+            return None
+        await self.broker.redis.set(self.broker.keys.cancel(str(job_id)), "1", ex=3600)
         return job
 
     async def replay_dead_letter(self, entry_id: str) -> Job | None:

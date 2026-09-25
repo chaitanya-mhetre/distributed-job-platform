@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import socket
 import time
 import uuid
@@ -37,6 +38,7 @@ from relay.backoff import backoff_seconds
 from relay.broker import DEFAULT_WEIGHTS, Message, WeightedOrder
 from relay.context import JobContext
 from relay.keys import GROUP
+from relay.locks import TypeSlots
 from relay.models import Job, PermanentError, Priority
 
 log = logging.getLogger("relay.worker")
@@ -60,6 +62,7 @@ class InFlight:
     msg: Message
     task: asyncio.Task[Any] | None = None
     stop_reason: StopReason = StopReason.NONE
+    slot_type: str | None = None  # set while holding a per-type concurrency slot
 
 
 @dataclass
@@ -86,6 +89,9 @@ class Worker:
         self._tasks: set[asyncio.Task[None]] = set()
         self._stopping = asyncio.Event()
         self._weighted = WeightedOrder({p: self.cfg.weights[p] for p in self.cfg.queues})
+        self._slots = TypeSlots(
+            relay.broker.redis, relay.broker.keys, ttl_ms=self.cfg.heartbeat_ttl_s * 1000
+        )
 
     # --- lifecycle ----------------------------------------------------------------------
 
@@ -175,6 +181,10 @@ class Worker:
                 by_stream: dict[str, list[Any]] = defaultdict(list)
                 for entry in list(self._inflight.values()):
                     by_stream[entry.msg.stream].append(entry.msg.entry_id)
+                now_ms = int(time.time() * 1000)
+                for jid, entry in list(self._inflight.items()):
+                    if entry.slot_type:
+                        await self._slots.refresh(entry.slot_type, str(jid), now_ms)
                 for stream, ids in by_stream.items():
                     # Re-claiming our own entries resets their idle time. XCLAIM only touches
                     # entries that are still pending, so it can't resurrect acked ones.
@@ -220,6 +230,32 @@ class Worker:
             self._inflight.pop(msg.job_id, None)
 
     async def _execute(self, msg: Message) -> None:
+        definition = self.relay.registry.get(msg.job_type)
+        if definition is not None and definition.max_concurrent is not None:
+            if not await self._slots.acquire(
+                msg.job_type, str(msg.job_id), definition.max_concurrent, int(time.time() * 1000)
+            ):
+                await self._defer(msg)
+                return
+            self._inflight[msg.job_id].slot_type = msg.job_type
+            try:
+                await self._run(msg)
+            finally:
+                await self._slots.release(msg.job_type, str(msg.job_id))
+        else:
+            await self._run(msg)
+
+    async def _defer(self, msg: Message) -> None:
+        """Per-type limit is full: put the job back in the delayed set for a moment. This does
+        not use up an attempt; the job simply waits for a free slot."""
+        store, broker = self.relay.store, self.relay.broker
+        run_at = datetime.now(UTC) + timedelta(seconds=random.uniform(0.1, 0.5))  # noqa: S311
+        job = await store.defer(msg.job_id, run_at)
+        if job is not None:
+            await broker.schedule(job.id, job.type, job.priority, run_at)
+        await broker.ack(msg)
+
+    async def _run(self, msg: Message) -> None:
         store, broker = self.relay.store, self.relay.broker
         job = await store.start_attempt(msg.job_id, self.worker_id)
         if job is None:
@@ -251,7 +287,7 @@ class Worker:
         if stopped and entry.stop_reason is StopReason.SHUTDOWN:
             await store.close_attempt(job.id, job.attempts, "interrupted", "worker shutdown", ms)
             return  # no ack: the scheduler re-queues it
-        if stopped and entry.stop_reason is StopReason.CANCEL:
+        if stopped and (entry.stop_reason is StopReason.CANCEL or ctx.cancel_requested):
             await self._record(job, msg, "cancelled", None, ms)
             return
         if timed_out:

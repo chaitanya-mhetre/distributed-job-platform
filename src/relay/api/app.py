@@ -75,6 +75,16 @@ def create_app(relay: Relay) -> FastAPI:
             raise HTTPException(409, "only failed or dead jobs can be retried")
         return JobOut.of(job)
 
+    @app.post("/v1/jobs/{job_id}:cancel", response_model=JobOut, status_code=202, dependencies=auth)
+    async def cancel_job(job_id: UUID) -> JobOut:
+        job = await relay.cancel(job_id)
+        if job is None:
+            existing = await relay.store.get(job_id)
+            if existing is None:
+                raise HTTPException(404, "job not found")
+            raise HTTPException(409, f"job already {existing.status}")
+        return JobOut.of(job)
+
     @app.get("/v1/dlq", response_model=list[DeadLetterOut], dependencies=auth)
     async def list_dlq(
         after: str = "-", limit: Annotated[int, Query(ge=1, le=500)] = 50
