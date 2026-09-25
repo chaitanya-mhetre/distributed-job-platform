@@ -1,15 +1,20 @@
-# Host ports are chosen to avoid clashing with the other Growth projects.
+# Relay: full local stack. Host ports avoid the other Growth projects.
+#   make up      -> redis + postgres only (for tests)
+#   make stack   -> everything below
 name: relay
 
 x-app: &app
   build: .
+  image: relay:dev
   environment:
     RELAY_REDIS_URL: redis://:relaydev@redis:6379/0
     RELAY_DATABASE_URL: postgresql+asyncpg://relay:relay@postgres:5432/relay
     RELAY_API_KEY: ${RELAY_API_KEY:-dev-key}
+    RELAY_LOG_LEVEL: INFO
   depends_on:
     redis: {condition: service_healthy}
     postgres: {condition: service_healthy}
+  restart: unless-stopped
 
 services:
   redis:
@@ -29,3 +34,55 @@ services:
       test: ["CMD", "pg_isready", "-U", "relay"]
       interval: 2s
       retries: 20
+
+  api:
+    <<: *app
+    profiles: [stack]
+    command: ["relay", "api", "--app", "examples.jobs:app", "--port", "18082"]
+    ports: ["18082:18082"]
+
+  worker:
+    <<: *app
+    profiles: [stack]
+    command: ["relay", "worker", "--app", "examples.jobs:app", "--concurrency", "50",
+              "--metrics-port", "9100"]
+    stop_grace_period: 40s   # > drain timeout (30 s), so SIGTERM gets a clean drain
+    deploy: {replicas: 3}
+
+  scheduler:
+    <<: *app
+    profiles: [stack]
+    command: ["relay", "scheduler", "--app", "examples.jobs:app", "--metrics-port", "9100"]
+    deploy: {replicas: 2}    # one leader, one standby
+
+  dashboard:
+    <<: *app
+    profiles: [stack]
+    command: ["relay", "dashboard", "--app", "examples.jobs:app", "--port", "18083"]
+    ports: ["18083:18083"]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    profiles: [stack]
+    volumes:
+      - ./deploy/prometheus:/etc/prometheus:ro
+    ports: ["59091:9090"]
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    profiles: [stack]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["53001:3000"]
+
+  # Failure injection: experiments point Relay at toxiproxy instead of Redis directly.
+  toxiproxy:
+    image: ghcr.io/shopify/toxiproxy:2.9.0
+    profiles: [chaos, stack]
+    ports:
+      - "58474:8474"   # toxiproxy control API
+      - "58475:58475"  # proxied Redis (listen port created by experiments/redis_latency.py)

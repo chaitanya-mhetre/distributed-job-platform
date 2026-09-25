@@ -15,13 +15,34 @@ from typing import Any
 import pytest
 from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from relay import Relay, Settings
 
 REDIS_URL = os.environ.get("RELAY_TEST_REDIS_URL", "redis://:relaydev@localhost:56384/0")
+# A separate database, so tests never touch the data of a stack running on the same Postgres.
 DB_URL = os.environ.get(
-    "RELAY_TEST_DATABASE_URL", "postgresql+asyncpg://relay:relay@localhost:55437/relay"
+    "RELAY_TEST_DATABASE_URL", "postgresql+asyncpg://relay:relay@localhost:55437/relay_test"
 )
+_db_ready = False
+
+
+async def ensure_test_database() -> None:
+    global _db_ready
+    if _db_ready:
+        return
+    base, _, name = DB_URL.rpartition("/")
+    admin = create_async_engine(f"{base}/postgres", isolation_level="AUTOCOMMIT")
+    try:
+        async with admin.connect() as conn:
+            exists = await conn.scalar(
+                text("SELECT 1 FROM pg_database WHERE datname = :n"), {"n": name}
+            )
+            if not exists:
+                await conn.execute(text(f'CREATE DATABASE "{name}"'))
+    finally:
+        await admin.dispose()
+    _db_ready = True
 
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
@@ -45,6 +66,7 @@ async def relay() -> AsyncIterator[Relay]:
     app = Relay(make_settings())
     try:
         await asyncio.wait_for(app.broker.redis.ping(), 2)
+        await asyncio.wait_for(ensure_test_database(), 5)
         async with app.store.engine.connect() as conn:
             await asyncio.wait_for(conn.execute(text("SELECT 1")), 5)
     except (OSError, TimeoutError, RedisConnectionError) as exc:

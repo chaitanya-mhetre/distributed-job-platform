@@ -15,4 +15,6 @@ fmt:
 up:
 	docker compose up -d --wait redis postgres
 down:
-	docker compose down
+	docker compose --profile stack --profile chaos down
+stack:           ## api, 3 workers, 2 schedulers, dashboard, prometheus, grafana
+	docker compose --profile stack up -d --build

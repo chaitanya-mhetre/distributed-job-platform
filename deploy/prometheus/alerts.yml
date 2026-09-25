@@ -1,0 +1,22 @@
+groups:
+  - name: relay
+    rules:
+      - alert: RelayNoLiveWorkers
+        expr: relay_live_workers == 0
+        for: 1m
+        labels: {severity: page}
+        annotations: {summary: "No worker has a live heartbeat: jobs are not being processed"}
+      - alert: RelayQueueTooOld
+        expr: max(relay_oldest_job_age_seconds) > 300
+        for: 5m
+        labels: {severity: page}
+        annotations: {summary: "Oldest queued job is older than the 5-minute SLO"}
+      - alert: RelayDLQGrowing
+        expr: increase(relay_dlq_size[15m]) > 10
+        labels: {severity: ticket}
+        annotations: {summary: "More than 10 jobs dead-lettered in 15 minutes"}
+      - alert: RelayNoSchedulerLeader
+        expr: sum(relay_scheduler_is_leader) == 0
+        for: 1m
+        labels: {severity: page}
+        annotations: {summary: "No scheduler holds the lease: delayed/retried jobs are stuck"}
