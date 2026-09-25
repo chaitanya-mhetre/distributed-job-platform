@@ -15,8 +15,10 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 _MIGRATION_LOCK_ID = 7_331_001
 
 
-def make_engine(database_url: str, pool_size: int = 10) -> AsyncEngine:
-    return create_async_engine(database_url, pool_size=pool_size, max_overflow=pool_size)
+def make_engine(database_url: str, pool_size: int = 8, max_overflow: int = 0) -> AsyncEngine:
+    return create_async_engine(
+        database_url, pool_size=pool_size, max_overflow=max_overflow, pool_pre_ping=True
+    )
 
 
 def _migration_files() -> list[tuple[str, str]]:

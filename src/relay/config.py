@@ -12,6 +12,12 @@ class Settings(BaseSettings):
     # Redis key namespace. Tests use a random one so runs never see each other's data.
     namespace: str = "relay"
 
+    # Connection budget: every process opens at most db_pool_size + db_max_overflow Postgres
+    # connections. Total = processes x that, and it must stay under Postgres max_connections
+    # (100 by default). The first 8-worker load test hit "too many clients" with 20/process.
+    db_pool_size: int = 8
+    db_max_overflow: int = 0
+
     api_key: str = ""
     # Backpressure: reject new jobs (HTTP 503) once a queue holds this many entries. 0 = off.
     # Growing queues are the symptom; rejecting early protects Redis memory and gives the

@@ -78,6 +78,9 @@ def decode_cursor(cursor: str) -> tuple[datetime, UUID]:
 class JobStore:
     def __init__(self, engine: AsyncEngine) -> None:
         self.engine = engine
+        # For single-statement writes on the hot path: no BEGIN/COMMIT round trips. Each
+        # statement is still atomic on its own (Postgres runs it in an implicit transaction).
+        self.autocommit = engine.execution_options(isolation_level="AUTOCOMMIT")
 
     # --- create / read ----------------------------------------------------------------
 
@@ -260,17 +263,28 @@ class JobStore:
         return _row_to_job(row) if row else None
 
     async def start_attempt(self, job_id: UUID, worker_id: str) -> Job | None:
-        """queued -> running, attempts += 1, and open a job_attempts row, in one transaction."""
-        async with self.engine.begin() as conn:
+        """queued -> running, attempts += 1, and open a job_attempts row.
+
+        One statement (a data-modifying CTE), so it's atomic and costs one round trip. The
+        first version used a transaction with two statements; see docs/benchmarks.md for
+        what that cost.
+        """
+        async with self.autocommit.connect() as conn:
             row = (
                 (
                     await conn.execute(
                         text(
                             """
-                        UPDATE jobs SET status = 'running', attempts = attempts + 1,
-                               locked_by = :worker, started_at = now(), updated_at = now()
-                        WHERE id = :id AND status = 'queued'
-                        RETURNING *
+                        WITH j AS (
+                            UPDATE jobs SET status = 'running', attempts = attempts + 1,
+                                   locked_by = :worker, started_at = now(), updated_at = now()
+                            WHERE id = :id AND status = 'queued'
+                            RETURNING *
+                        ), a AS (
+                            INSERT INTO job_attempts (job_id, attempt, worker_id)
+                            SELECT id, attempts, :worker FROM j
+                        )
+                        SELECT * FROM j
                         """
                         ),
                         {"id": job_id, "worker": worker_id},
@@ -279,16 +293,56 @@ class JobStore:
                 .mappings()
                 .first()
             )
-            if row is None:
-                return None
-            await conn.execute(
-                text(
-                    "INSERT INTO job_attempts (job_id, attempt, worker_id)"
-                    " VALUES (:id, :attempt, :worker)"
-                ),
-                {"id": job_id, "attempt": row["attempts"], "worker": worker_id},
+        return _row_to_job(row) if row else None
+
+    async def finish(
+        self,
+        job_id: UUID,
+        target: JobStatus,
+        *,
+        attempt: int,
+        outcome: str,
+        error: str | None,
+        duration_ms: int,
+        sets: str = "",
+        params: dict[str, Any] | None = None,
+    ) -> Job | None:
+        """Record the end of an attempt: move the job to `target` (if allowed) and close the
+        job_attempts row, in one statement / one round trip."""
+        extra = f", {sets}" if sets else ""
+        sql = f"""
+            WITH j AS (
+                UPDATE jobs SET status = :target, updated_at = now(){extra}
+                WHERE id = :id AND status = ANY(:from)
+                RETURNING *
+            ), a AS (
+                UPDATE job_attempts SET finished_at = now(), outcome = :outcome,
+                       error = :error, duration_ms = :ms
+                WHERE job_id = :id AND attempt = :attempt AND finished_at IS NULL
             )
-        return _row_to_job(row)
+            SELECT * FROM j
+        """  # noqa: S608 - `sets` is built by the worker from constants, never user input
+        async with self.autocommit.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(sql),
+                        {
+                            "id": job_id,
+                            "target": target.value,
+                            "from": allowed_from(target),
+                            "attempt": attempt,
+                            "outcome": outcome,
+                            "error": error,
+                            "ms": duration_ms,
+                        }
+                        | (params or {}),
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return _row_to_job(row) if row else None
 
     async def close_attempt(
         self, job_id: UUID, attempt: int, outcome: str, error: str | None, duration_ms: int

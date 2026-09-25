@@ -97,6 +97,7 @@ async def drain(args: argparse.Namespace) -> Report:
             await spawn("worker", relay, "--concurrency", str(args.concurrency))
             for _ in range(workers)
         ]
+        procs.append(await spawn("scheduler", relay))  # realistic: reclaims if anything stalls
         try:
             await wait_terminal(relay, args.jobs, timeout_s=600)
         finally:
@@ -126,6 +127,7 @@ async def latency(args: argparse.Namespace) -> Report:
             await spawn("worker", relay, "--concurrency", str(args.concurrency))
             for _ in range(workers)
         ]
+        procs.append(await spawn("scheduler", relay))
         await asyncio.sleep(3)  # let worker processes import and connect
         n = int(args.rate * args.duration)
         loop = asyncio.get_running_loop()

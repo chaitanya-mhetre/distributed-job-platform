@@ -21,6 +21,7 @@ crash in between means "run again", never "lost"):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import random
@@ -40,7 +41,7 @@ from relay.broker import DEFAULT_WEIGHTS, Message, WeightedOrder
 from relay.context import JobContext
 from relay.keys import GROUP
 from relay.locks import TypeSlots
-from relay.models import Job, PermanentError, Priority
+from relay.models import Job, JobStatus, PermanentError, Priority
 
 log = logging.getLogger("relay.worker")
 
@@ -319,13 +320,33 @@ class Worker:
         """Write the outcome to Postgres, do any Redis follow-up, then ack."""
         store, broker = self.relay.store, self.relay.broker
         attempt_outcome = outcome
+        done = "finished_at = now(), locked_by = NULL"
+
+        async def finish(target: JobStatus, label: str, sets: str, **params: Any) -> bool:
+            job_after = await store.finish(
+                job.id,
+                target,
+                attempt=job.attempts,
+                outcome=label,
+                error=error,
+                duration_ms=ms,
+                sets=sets,
+                params=params,
+            )
+            return job_after is not None
+
         if outcome == "succeeded":
-            await store.mark_succeeded(job.id, result)
+            await finish(
+                JobStatus.SUCCEEDED,
+                outcome,
+                f"result = CAST(:result AS jsonb), last_error = NULL, {done}",
+                result=json.dumps(result),
+            )
         elif outcome == "cancelled":
-            await store.mark_cancelled(job.id)
+            await finish(JobStatus.CANCELLED, outcome, done)
             await broker.redis.delete(broker.keys.cancel(str(job.id)))
         elif outcome == "failed":
-            await store.mark_failed(job.id, error or "")
+            await finish(JobStatus.FAILED, outcome, f"last_error = :err, {done}", err=error)
         else:  # error / timeout: retry or give up
             assert error is not None
             if job.attempts < job.max_attempts:
@@ -333,14 +354,19 @@ class Worker:
                     job.attempts, base_s=self.cfg.backoff_base_s, cap_s=self.cfg.backoff_cap_s
                 )
                 run_at = datetime.now(UTC) + timedelta(seconds=delay)
-                if await store.mark_retry(job.id, run_at, error):
-                    await broker.schedule(job.id, job.type, job.priority, run_at)
                 attempt_outcome = "retry" if outcome == "error" else "timeout"
+                if await finish(
+                    JobStatus.SCHEDULED,
+                    attempt_outcome,
+                    "run_at = :run_at, last_error = :err, locked_by = NULL",
+                    run_at=run_at,
+                    err=error,
+                ):
+                    await broker.schedule(job.id, job.type, job.priority, run_at)
             else:
-                if await store.mark_dead(job.id, error):
-                    await broker.dead_letter(job.id, job.type, error)
                 attempt_outcome = "dead"
-        await store.close_attempt(job.id, job.attempts, attempt_outcome, error, ms)
+                if await finish(JobStatus.DEAD, "dead", f"last_error = :err, {done}", err=error):
+                    await broker.dead_letter(job.id, job.type, error)
         await broker.ack(msg)
         metrics.JOBS.labels(job.type, attempt_outcome).inc()
         metrics.DURATION.labels(job.type).observe(ms / 1000)

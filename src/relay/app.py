@@ -90,7 +90,13 @@ class Relay:
     @property
     def store(self) -> JobStore:
         if self._store is None:
-            self._store = JobStore(make_engine(self.settings.database_url))
+            self._store = JobStore(
+                make_engine(
+                    self.settings.database_url,
+                    self.settings.db_pool_size,
+                    self.settings.db_max_overflow,
+                )
+            )
         return self._store
 
     @property
