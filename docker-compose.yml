@@ -20,7 +20,7 @@ services:
   redis:
     image: redis:7-alpine
     command: ["redis-server", "--requirepass", "relaydev", "--appendonly", "yes"]
-    ports: ["56384:6379"]
+    ports: ["127.0.0.1:56384:6379"]
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "relaydev", "ping"]
       interval: 2s
@@ -29,7 +29,7 @@ services:
   postgres:
     image: postgres:16-alpine
     environment: {POSTGRES_USER: relay, POSTGRES_PASSWORD: relay, POSTGRES_DB: relay}
-    ports: ["55437:5432"]
+    ports: ["127.0.0.1:55437:5432"]
     healthcheck:
       test: ["CMD", "pg_isready", "-U", "relay"]
       interval: 2s
@@ -66,7 +66,7 @@ services:
     profiles: [stack]
     volumes:
       - ./deploy/prometheus:/etc/prometheus:ro
-    ports: ["59091:9090"]
+    ports: ["127.0.0.1:59091:9090"]
 
   grafana:
     image: grafana/grafana:11.3.0
@@ -77,12 +77,12 @@ services:
     volumes:
       - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
-    ports: ["53001:3000"]
+    ports: ["127.0.0.1:53001:3000"]
 
   # Failure injection: experiments point Relay at toxiproxy instead of Redis directly.
   toxiproxy:
     image: ghcr.io/shopify/toxiproxy:2.9.0
     profiles: [chaos, stack]
     ports:
-      - "58474:8474"   # toxiproxy control API
-      - "58475:58475"  # proxied Redis (listen port created by experiments/redis_latency.py)
+      - "127.0.0.1:58474:8474"   # toxiproxy control API
+      - "127.0.0.1:58475:58475"  # proxied Redis (listen port created by experiments/redis_latency.py)
