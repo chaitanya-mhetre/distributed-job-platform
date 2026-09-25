@@ -1,0 +1,51 @@
+<div class="grid">
+  <div class="tile">Live workers<b class="{{ 'bad' if not workers else 'ok' }}">{{ workers|length }}</b></div>
+  <div class="tile">Running<b>{{ counts.get('running', 0) }}</b></div>
+  <div class="tile">Delayed<b>{{ delayed }}</b></div>
+  <div class="tile">Succeeded<b class="ok">{{ counts.get('succeeded', 0) }}</b></div>
+  <div class="tile">Failed<b class="{{ 'bad' if counts.get('failed') else '' }}">{{ counts.get('failed', 0) }}</b></div>
+  <div class="tile">Dead-letter<b class="{{ 'bad' if dlq_size else '' }}">{{ dlq_size }}</b></div>
+</div>
+
+<h2>Queues</h2>
+<div class="wrap"><table>
+  <tr><th>Queue</th><th>Depth</th><th>Pending (in flight)</th><th>Oldest entry</th><th>Consumers</th></tr>
+  {% for q in queues %}
+  <tr><td><code>{{ q.name }}</code></td><td>{{ q.depth }}</td><td>{{ q.pending }}</td>
+      <td class="{{ 'warn' if q.oldest_age_s > 60 else '' }}">{{ '%.1f'|format(q.oldest_age_s) }} s</td><td>{{ q.consumers }}</td></tr>
+  {% endfor %}
+</table></div>
+
+<h2>Running now</h2>
+{% if running %}
+<div class="wrap"><table>
+  <tr><th>Job</th><th>Type</th><th>Attempt</th><th>Worker</th><th>Started</th></tr>
+  {% for j in running %}
+  <tr><td><code>{{ j.id|string|truncate(13, True, '…') }}</code></td><td>{{ j.type }}</td><td>{{ j.attempts }}/{{ j.max_attempts }}</td>
+      <td><code>{{ j.locked_by }}</code></td><td>{{ j.started_at.strftime('%H:%M:%S') if j.started_at else '' }}</td></tr>
+  {% endfor %}
+</table></div>
+{% else %}<p class="muted">Nothing running.</p>{% endif %}
+
+<h2>Recent failures</h2>
+{% if problems %}
+<div class="wrap"><table>
+  <tr><th>Job</th><th>Type</th><th>Status</th><th>Attempts</th><th>Last error</th></tr>
+  {% for j in problems %}
+  <tr><td><code>{{ j.id|string|truncate(13, True, '…') }}</code></td><td>{{ j.type }}</td><td class="bad">{{ j.status }}</td>
+      <td>{{ j.attempts }}</td><td><code>{{ (j.last_error or '')|truncate(120) }}</code></td></tr>
+  {% endfor %}
+</table></div>
+{% else %}<p class="muted">No failed or dead jobs.</p>{% endif %}
+
+<h2>Dead-letter stream</h2>
+{% if dlq %}
+<div class="wrap"><table>
+  <tr><th>Entry</th><th>Job</th><th>Type</th><th>Error</th></tr>
+  {% for d in dlq %}
+  <tr><td><code>{{ d.entry_id }}</code></td><td><code>{{ d.job_id|string|truncate(13, True, '…') }}</code></td><td>{{ d.job_type }}</td><td><code>{{ d.error|truncate(120) }}</code></td></tr>
+  {% endfor %}
+</table>
+<p class="muted">Replay with <code>relay dlq replay &lt;entry&gt;</code> or <code>POST /v1/dlq/&lt;entry&gt;:replay</code>.</p></div>
+{% else %}<p class="muted">Empty.</p>{% endif %}
+<p class="muted">Updated {{ now.strftime('%H:%M:%S') }} UTC</p>

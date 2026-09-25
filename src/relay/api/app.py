@@ -8,8 +8,10 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy.exc import IntegrityError
 
+from relay.api.dashboard import dashboard_router
 from relay.api.schemas import (
     DeadLetterOut,
     JobIn,
@@ -19,7 +21,8 @@ from relay.api.schemas import (
     RecurringOut,
     RecurringPatch,
 )
-from relay.app import Relay, UnknownJobTypeError
+from relay.app import QueueFullError, Relay, UnknownJobTypeError
+from relay.metrics import sample_queue_gauges
 from relay.models import JobStatus
 from relay.recurring import validate_cron
 
@@ -64,6 +67,8 @@ def create_app(relay: Relay) -> FastAPI:
             )
         except UnknownJobTypeError as exc:
             raise HTTPException(422, f"unknown job type {exc}") from exc
+        except QueueFullError as exc:
+            raise HTTPException(503, str(exc), headers={"Retry-After": "5"}) from exc
         if not res.created:
             response.status_code = status.HTTP_200_OK  # idempotent hit: same job as before
         return JobOut.of(res.job)
@@ -157,6 +162,13 @@ def create_app(relay: Relay) -> FastAPI:
         if not await relay.store.delete_recurring(rid):
             raise HTTPException(404, "recurring job not found")
 
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics_endpoint() -> Response:
+        await sample_queue_gauges(relay)
+        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+    app.include_router(dashboard_router(relay))
+
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
@@ -169,5 +181,29 @@ def create_app(relay: Relay) -> FastAPI:
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(503, f"not ready: {exc}") from exc
         return {"status": "ready"}
+
+    return app
+
+
+def create_dashboard_app(relay: Relay) -> FastAPI:
+    """Dashboard + metrics only (no mutating endpoints), for `relay dashboard`."""
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        await relay.setup()
+        yield
+        await relay.close()
+
+    app = FastAPI(title="Relay dashboard", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app.include_router(dashboard_router(relay))
+
+    @app.get("/metrics", include_in_schema=False)
+    async def metrics_endpoint() -> Response:
+        await sample_queue_gauges(relay)
+        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+    @app.get("/")
+    async def root() -> Response:
+        return Response(status_code=307, headers={"Location": "/dashboard"})
 
     return app

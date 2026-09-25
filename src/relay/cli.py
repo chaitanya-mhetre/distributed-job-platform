@@ -54,12 +54,23 @@ def api(relay_app: str = APP_OPT, host: str = "0.0.0.0", port: int = 18082) -> N
 
 
 @app.command()
+def dashboard(relay_app: str = APP_OPT, host: str = "0.0.0.0", port: int = 18083) -> None:  # noqa: S104
+    """Run the read-only dashboard (+ /metrics)."""
+    from relay.api import create_dashboard_app
+
+    relay = load_app(relay_app)
+    setup_logging(relay.settings.log_level)
+    uvicorn.run(create_dashboard_app(relay), host=host, port=port, log_config=None)
+
+
+@app.command()
 def worker(
     relay_app: str = APP_OPT,
     concurrency: int = 10,
     heartbeat_s: float = 5.0,
     heartbeat_ttl_s: int = 15,
     drain_timeout_s: float = 30.0,
+    metrics_port: int = typer.Option(0, help="serve Prometheus metrics on this port (0 = off)"),
 ) -> None:
     """Run a worker process."""
     from relay.worker import Worker, WorkerConfig
@@ -72,17 +83,29 @@ def worker(
         heartbeat_ttl_s=heartbeat_ttl_s,
         drain_timeout_s=drain_timeout_s,
     )
+    _serve_metrics(metrics_port)
     _run_process(relay, Worker(relay, cfg))
 
 
 @app.command()
-def scheduler(relay_app: str = APP_OPT) -> None:
+def scheduler(
+    relay_app: str = APP_OPT,
+    metrics_port: int = typer.Option(0, help="serve Prometheus metrics on this port (0 = off)"),
+) -> None:
     """Run a scheduler (run 2+ for failover; one is elected leader)."""
     from relay.scheduler import Scheduler
 
     relay = load_app(relay_app)
     setup_logging(relay.settings.log_level)
+    _serve_metrics(metrics_port)
     _run_process(relay, Scheduler(relay))
+
+
+def _serve_metrics(port: int) -> None:
+    if port:
+        from prometheus_client import start_http_server
+
+        start_http_server(port)
 
 
 class _Runnable(Protocol):
