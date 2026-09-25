@@ -1,6 +1,6 @@
 name: ci
 on:
-  push: {branches: [main, master]}
+  push: {branches: [main]}
   pull_request:
   schedule:
     - cron: "0 3 * * *"   # nightly: includes the slow chaos tests
