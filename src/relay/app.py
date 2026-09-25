@@ -13,10 +13,10 @@ the set of registered job types doubles as the allow-list of what the API accept
 
 from __future__ import annotations
 
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from relay import metrics
@@ -27,6 +27,9 @@ from relay.locks import LockManager
 from relay.models import Job, JobStatus, Priority
 from relay.recurring import validate_cron
 from relay.store import JobStore, NewJob, NewRecurring, RecurringJob
+
+if TYPE_CHECKING:
+    from relay.producer import BatchingProducer
 
 Handler = Callable[..., Coroutine[Any, Any, Any]]
 
@@ -48,6 +51,19 @@ class JobDef:
     priority: Priority = Priority.DEFAULT
     # at most this many jobs of this type run at once across *all* workers (None = no limit)
     max_concurrent: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class JobSpec:
+    """One item for Relay.enqueue_many(): the same arguments enqueue() takes."""
+
+    type: str
+    payload: dict[str, Any] | None = None
+    priority: Priority | str | None = None
+    run_at: datetime | None = None
+    max_attempts: int | None = None
+    timeout_s: int | None = None
+    idempotency_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,6 +143,42 @@ class Relay:
 
     # --- producing ----------------------------------------------------------------------
 
+    def _new_job(
+        self,
+        job_type: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        priority: Priority | str | None = None,
+        run_at: datetime | None = None,
+        max_attempts: int | None = None,
+        timeout_s: int | None = None,
+        idempotency_key: str | None = None,
+    ) -> NewJob:
+        """Validate the job type and fill defaults from its @app.job registration."""
+        definition = self.registry.get(job_type)
+        if self.registry and definition is None:
+            raise UnknownJobTypeError(job_type)
+        return NewJob(
+            type=job_type,
+            payload=payload or {},
+            priority=Priority(priority)
+            if priority
+            else (definition.priority if definition else Priority.DEFAULT),
+            run_at=run_at,
+            max_attempts=max_attempts or (definition.max_attempts if definition else 3),
+            timeout_s=timeout_s or (definition.timeout_s if definition else 60),
+            idempotency_key=idempotency_key,
+        )
+
+    async def _check_backpressure(self, priorities: set[Priority]) -> None:
+        if not self.settings.max_queue_depth:
+            return
+        for priority in priorities:
+            depth = await self.broker.redis.xlen(self.broker.keys.queue(priority))
+            if depth >= self.settings.max_queue_depth:
+                metrics.REJECTED.labels(priority.value).inc()
+                raise QueueFullError(f"queue {priority} has {depth} jobs waiting")
+
     async def enqueue(
         self,
         job_type: str,
@@ -138,30 +190,64 @@ class Relay:
         timeout_s: int | None = None,
         idempotency_key: str | None = None,
     ) -> EnqueueResult:
-        definition = self.registry.get(job_type)
-        if self.registry and definition is None:
-            raise UnknownJobTypeError(job_type)
-        new = NewJob(
-            type=job_type,
-            payload=payload or {},
-            priority=Priority(priority)
-            if priority
-            else (definition.priority if definition else Priority.DEFAULT),
+        new = self._new_job(
+            job_type,
+            payload,
+            priority=priority,
             run_at=run_at,
-            max_attempts=max_attempts or (definition.max_attempts if definition else 3),
-            timeout_s=timeout_s or (definition.timeout_s if definition else 60),
+            max_attempts=max_attempts,
+            timeout_s=timeout_s,
             idempotency_key=idempotency_key,
         )
-        if self.settings.max_queue_depth:
-            depth = await self.broker.redis.xlen(self.broker.keys.queue(new.priority))
-            if depth >= self.settings.max_queue_depth:
-                metrics.REJECTED.labels(new.priority.value).inc()
-                raise QueueFullError(f"queue {new.priority} has {depth} jobs waiting")
+        await self._check_backpressure({new.priority})
         job, created = await self.store.create(new)
         if created:
             await self.dispatch(job)
             metrics.ENQUEUED.labels(job.type, job.priority.value).inc()
         return EnqueueResult(job, created)
+
+    async def enqueue_many(self, specs: Sequence[JobSpec]) -> list[EnqueueResult]:
+        """Enqueue a batch with three round trips in total instead of three per job:
+        one multi-row INSERT, one Redis pipeline, one UPDATE of dispatched_at.
+
+        Same guarantees as enqueue(): Postgres first, Redis second, and rows that never got
+        marked dispatched are re-sent by the scheduler's reconciliation loop. The whole batch
+        is validated before anything is written, so one unknown job type rejects the batch.
+        Results come back in input order.
+        """
+        news = [
+            self._new_job(
+                s.type,
+                s.payload,
+                priority=s.priority,
+                run_at=s.run_at,
+                max_attempts=s.max_attempts,
+                timeout_s=s.timeout_s,
+                idempotency_key=s.idempotency_key,
+            )
+            for s in specs
+        ]
+        if not news:
+            return []
+        await self._check_backpressure({n.priority for n in news})
+        rows = await self.store.create_many(news)
+        fresh = [job for job, created in rows if created]
+        if fresh:
+            await self.broker.enqueue_many(fresh)
+            await self.store.mark_dispatched([j.id for j in fresh])
+            for job in fresh:
+                metrics.ENQUEUED.labels(job.type, job.priority.value).inc()
+        return [EnqueueResult(job, created) for job, created in rows]
+
+    def batching(self, max_batch: int = 200, max_delay_ms: float = 5.0) -> BatchingProducer:
+        """A producer that coalesces concurrent enqueue() calls into enqueue_many() batches.
+
+        async with app.batching() as producer:
+            await producer.enqueue("send_email", {...})
+        """
+        from relay.producer import BatchingProducer  # local: relay.producer imports this module
+
+        return BatchingProducer(self, max_batch=max_batch, max_delay_ms=max_delay_ms)
 
     async def dispatch(self, job: Job) -> None:
         """Hand a job to Redis (stream or delayed ZSET), then record that we did.
