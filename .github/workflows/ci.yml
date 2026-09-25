@@ -1,0 +1,56 @@
+name: ci
+on:
+  push: {branches: [main, master]}
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *"   # nightly: includes the slow chaos tests
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: {POSTGRES_USER: relay, POSTGRES_PASSWORD: relay, POSTGRES_DB: relay}
+        ports: ["55437:5432"]
+        options: --health-cmd "pg_isready -U relay" --health-interval 2s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["56384:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 2s --health-retries 20
+    env:
+      # CI Redis has no password
+      RELAY_TEST_REDIS_URL: redis://localhost:56384/0
+      RELAY_TEST_DATABASE_URL: postgresql+asyncpg://relay:relay@localhost:55437/relay_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+      - run: uv sync --frozen
+      - run: uv run ruff check . && uv run ruff format --check .
+      - run: uv run mypy
+      - name: tests (slow chaos tests only on the nightly schedule)
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            uv run pytest -q
+          else
+            uv run pytest -q -m "not slow"
+          fi
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build
+      - uses: actions/upload-artifact@v4
+        with: {name: dist, path: dist/}
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t relay:ci .
+      - name: secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env: {GITHUB_TOKEN: "${{ secrets.GITHUB_TOKEN }}"}
