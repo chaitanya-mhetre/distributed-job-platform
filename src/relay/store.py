@@ -350,6 +350,25 @@ class JobStore:
             job_id, JobStatus.SCHEDULED, "run_at = :run_at", {"run_at": run_at}
         )
 
+    async def cancel_if_pending(self, job_id: UUID) -> Job | None:
+        """queued/scheduled -> cancelled. Running jobs are cancelled cooperatively instead."""
+        async with self.engine.begin() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            "UPDATE jobs SET status = 'cancelled', finished_at = now(),"
+                            " updated_at = now()"
+                            " WHERE id = :id AND status IN ('queued', 'scheduled') RETURNING *"
+                        ),
+                        {"id": job_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return _row_to_job(row) if row else None
+
     async def mark_cancelled(self, job_id: UUID) -> Job | None:
         return await self._transition(
             job_id, JobStatus.CANCELLED, "finished_at = now(), locked_by = NULL"
@@ -531,3 +550,25 @@ class RecurringJob:
             last_enqueued_at=row["last_enqueued_at"],
             created_at=row["created_at"],
         )
+
+
+async def fenced_write(engine: AsyncEngine, resource: str, token: int, value: Any) -> bool:
+    """Write `value` for `resource` only if `token` is newer than the last applied token.
+    Returns False when a stale lock holder is rejected."""
+    async with engine.begin() as conn:
+        row = (
+            await conn.execute(
+                text(
+                    """
+                    INSERT INTO fenced_writes (resource, fence, value)
+                    VALUES (:r, :t, CAST(:v AS jsonb))
+                    ON CONFLICT (resource) DO UPDATE
+                        SET fence = EXCLUDED.fence, value = EXCLUDED.value, updated_at = now()
+                        WHERE fenced_writes.fence < EXCLUDED.fence
+                    RETURNING resource
+                    """
+                ),
+                {"r": resource, "t": token, "v": json.dumps(value)},
+            )
+        ).first()
+    return row is not None
