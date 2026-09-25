@@ -64,6 +64,7 @@ More detail: [docs/delivery-guarantees.md](docs/delivery-guarantees.md) ·
 - Per-job timeouts, including handlers that swallow `CancelledError`
 - Dead-letter stream, with replay from the API/CLI
 - Idempotent submission (`idempotency_key`) and `ctx.once()` for side effects
+- Batched submission: `enqueue_many()` and a micro-batching producer (`app.batching()`)
 - Heartbeats, dead-worker reclaim, graceful drain on SIGTERM
 - Distributed locks with **fencing tokens**; distributed per-type concurrency limits (`max_concurrent`)
 - Cooperative cancellation of queued, delayed and running jobs
@@ -97,7 +98,9 @@ make stack
 ## Usage
 
 ```python
-from relay import JobContext, PermanentError, Relay
+import asyncio
+
+from relay import JobContext, JobSpec, PermanentError, Relay
 
 app = Relay()  # settings from RELAY_* env vars (see .env.example)
 
@@ -122,6 +125,14 @@ await app.enqueue(
     idempotency_key="welcome-a@b.c",
 )
 await app.add_recurring("nightly-report", "0 3 * * *", "report")
+
+# High-rate producers: coalesce concurrent enqueue() calls into batches
+# (3 round trips per batch instead of 3 per job; see docs/benchmarks.md §2b)
+async with app.batching(max_batch=200, max_delay_ms=5) as producer:
+    await asyncio.gather(*(producer.enqueue("send_email", {"to": t}) for t in recipients))
+
+# Or explicitly
+await app.enqueue_many([JobSpec("send_email", {"to": t}) for t in recipients])
 ```
 
 ### HTTP API
@@ -180,6 +191,9 @@ background load, single runs):
 
 - Drain of 20,000 no-op jobs: **~1,270 jobs/s with 8 worker processes**. 1 worker: ~330–440 jobs/s.
 - Open-loop 100 jobs/s: submit → complete **p50 12 ms, p95 398 ms, p99 688 ms**.
+- Producer batching: at 500 jobs/s the single-enqueue producer fell behind (360/s, `enqueue()` p99
+  8.4 s); the batching producer kept up (499.6/s, p99 22 ms) and also held **1,000/s**, where the single
+  producer crashed on connection-pool timeouts.
 - `kill -9` of a worker holding 50 jobs: all recovered in **15–17 s** (heartbeat TTL 15 s), none lost.
 - Under repeated `kill -9`: **17.6%** of jobs ran more than once; `once()` stopped duplicate side
   effects, but **4 of 1,500** side effects were lost in its documented gap.
@@ -199,7 +213,8 @@ background load, single runs):
 
 - One Redis. Stream data and locks aren't safe across a Redis failover with async replication.
   Postgres plus reconciliation limits the damage for jobs, but not for locks.
-- Throughput is bounded by Postgres writes per job. There's no batching yet.
+- Throughput is bounded by Postgres writes per job on the **worker** side (start/finish per job).
+  Submission can be batched (`enqueue_many`, `app.batching()`); status writes can't yet.
 - The per-type limit defers jobs by re-scheduling them, which adds latency under heavy contention.
 - The benchmarks come from a noisy laptop with single runs. The CI workflow is written but has
   **not yet run on GitHub**.
@@ -208,7 +223,7 @@ background load, single runs):
 
 ## Roadmap
 
-- Batch status writes; optional attempt history, to raise the Postgres ceiling
+- Batch worker status writes; optional attempt history, to raise the Postgres ceiling
 - A second `Broker` backend (RabbitMQ) so the comparison is empirical
 - Kubernetes manifests with KEDA autoscaling on queue depth (`cloud-infra-lab`)
 - Repeat the benchmarks on a dedicated VM, with error bars

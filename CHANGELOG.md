@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Producer batching (#2)
+- `JobStore.create_many`: one multi-row INSERT per batch (jsonb_to_recordset), same idempotency rules.
+- `RedisBroker.enqueue_many`: one MULTI/EXEC pipeline for the whole batch.
+- `Relay.enqueue_many(specs)` + `JobSpec`, and `Relay.batching()` → `BatchingProducer` (flush at
+  `max_batch` or `max_delay_ms`, bounded in-flight batches, per-caller results and errors).
+- Load test: `latency --producer single|batch`. Measured: 200/s now achieved with either producer;
+  batch held 500/s and 1,000/s where the single producer fell behind or crashed (docs/benchmarks.md §2b).
+
 ## 0.1.0 (2026-09-25)
 
 ### M1: single-queue core

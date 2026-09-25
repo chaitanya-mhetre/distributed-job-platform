@@ -63,13 +63,53 @@ Jobs are submitted on a fixed schedule whether or not Relay keeps up. Latency =
 |---|---|---|---|---|---|
 | 100 jobs/s | 97.6 jobs/s | 11.9 ms | 398 ms | 688 ms | 1,362 ms |
 
-- **200 jobs/s: not achieved.** Three attempts reached 115, 170 and 129 jobs/s
-  (`latency-200rps-producer-bound*.log`).
-  - The bottleneck was the single Python **producer**, not the workers.
-  - Each `enqueue` is INSERT, XADD, then UPDATE `dispatched_at`, sharing a small pool on a saturated machine.
-  - Those runs' latency numbers are not meaningful, because jobs queued inside the producer before
-    they even had a row.
+- **200 jobs/s: not achieved in the first session** (load average about 22). Three attempts reached
+  115, 170 and 129 jobs/s (`latency-200rps-producer-bound*.log`). The single Python **producer** was
+  the bottleneck, and those runs' latency numbers are not meaningful, because jobs queued inside the
+  producer before they even had a row. See §2b for the follow-up.
 - The long p95/p99 tail at 100/s is consistent with CPU contention: load average about 22.
+
+## 2b. Producer batching (issue #2, measured 2026-09-25)
+
+**Profile first** (`producer-profile.log`): 64 concurrent `enqueue()` calls, 2,000 jobs, two runs.
+
+| Step | p50 | p95 |
+|---|---|---|
+| INSERT (Postgres) | 28.4–28.6 ms | 82–94 ms |
+| XADD (Redis) | 2.1 ms | 3.4–4.5 ms |
+| UPDATE `dispatched_at` (Postgres) | 29.5–31.6 ms | 68–72 ms |
+
+Each job costs **two Postgres round trips**, and most of that time is spent waiting for a pooled
+connection, not in the SQL itself. Redis is cheap. So the fix is to pay those round trips once per
+*batch* instead of once per job:
+
+- `JobStore.create_many`: one `INSERT ... SELECT FROM ROWS FROM (jsonb_to_recordset(...))` for N jobs,
+  with the same `ON CONFLICT` idempotency as `create()`.
+- `RedisBroker.enqueue_many`: all XADDs (and delayed-set writes) in one MULTI/EXEC pipeline.
+- One `UPDATE ... WHERE id = ANY(...)` for `dispatched_at`.
+- `BatchingProducer` (`app.batching()`): coalesces concurrent `enqueue()` calls; flushes at
+  `max_batch` (200) or after `max_delay_ms` (5 ms), up to 4 batches in flight.
+
+**Same busy laptop, same session, back to back** (load average 5–8; `latency-producer-single-vs-batch.log`;
+single runs, so treat small differences as noise):
+
+| Target | Producer | Achieved | e2e p50 | e2e p95 | e2e p99 | `enqueue()` p99 |
+|---|---|---|---|---|---|---|
+| 200/s, 2 workers | single | 199.0/s | 7.0 ms | 86 ms | 197 ms | 249 ms |
+| 200/s, 2 workers | **batch** | 199.9/s | 7.7 ms | 23.5 ms | 46 ms | 36 ms |
+| 500/s, 4 workers | single | **360/s** (fell behind) | 20 ms | 99 ms | 183 ms | **8,361 ms** |
+| 500/s, 4 workers | **batch** | 499.6/s | 10.0 ms | 14.2 ms | 141 ms | 22 ms |
+| 1,000/s, 4 workers | single | **crashed**: `QueuePool ... timed out` after 30 s (twice) | – | – | – | – |
+| 1,000/s, 4 workers | **batch** | 998/s | 17.2 ms | 120 ms | 250 ms | 43 ms |
+
+- **200 jobs/s is achieved with both producers today.** The earlier failure was mostly the machine
+  (load about 22 then, 2–8 now). Being honest about that matters more than claiming a fix.
+- The real gain is **headroom**. The single producer saturates somewhere between 200 and 500 jobs/s
+  on this machine; at 1,000/s its backlog waits more than 30 s for a connection and the run dies.
+  The batching producer held 1,000/s with `enqueue()` p99 of 43 ms.
+- Cost of batching: up to `max_delay_ms` (5 ms) of extra latency for a lone job, which you can see in
+  the 200/s p50 (7.7 vs 7.0 ms). At higher rates, batches fill before the timer fires.
+- Not measured yet: where the batching producer tops out, and repeat runs with error bars (issue #1).
 
 ## 3. HTTP submit endpoint (k6)
 

@@ -26,9 +26,10 @@ the function names won't.
 | 1 | `models.py` | The job **state machine as data** (`TRANSITIONS`, `allowed_from`, l.17–64). Everything else enforces these rules. |
 | 2 | `keys.py` | Every Redis key in one place. Sketch the key space on paper. |
 | 3 | `migrations/001_jobs.sql` | The `jobs` table: the partial unique index for idempotency, and `dispatched_at` for outbox-lite. |
-| 4 | `store.py` | All SQL. Start with `create` (l.87, `ON CONFLICT DO NOTHING` idempotency), then `_transition` (l.239), `start_attempt` (l.267) and `finish` (l.300): data-modifying CTEs, one round trip, `locked_by` ownership check. |
-| 5 | `broker.py` | Redis Streams: `read` (l.191, weighted then blocking), `ack` (l.226, XACK + XDEL), `_PROMOTE_LUA` (l.32), `claim`/`republish` (l.274–298), `WeightedOrder` (l.79). |
-| 6 | `app.py` | The SDK: `enqueue` (l.130, backpressure + idempotency), `dispatch` (l.166, **Postgres before Redis**), `cancel` (l.193). |
+| 4 | `store.py` | All SQL. Start with `create` (l.103, `ON CONFLICT DO NOTHING` idempotency) and its batch twin `create_many` (l.144, one INSERT for N jobs via `jsonb_to_recordset`), then `_transition` (l.314), `start_attempt` (l.342) and `finish` (l.375): data-modifying CTEs, one round trip, `locked_by` ownership check. |
+| 5 | `broker.py` | Redis Streams: `read` (l.211, weighted then blocking), `ack` (l.246, XACK + XDEL), `_PROMOTE_LUA` (l.32), `claim`/`republish` (l.294–307), `WeightedOrder` (l.79), `enqueue_many` (l.154, one MULTI/EXEC pipeline). |
+| 6 | `app.py` | The SDK: `enqueue` (l.182, backpressure + idempotency), `enqueue_many` (l.209, 3 round trips per batch), `dispatch` (l.252, **Postgres before Redis**), `cancel` (l.279). |
+| 6b | `producer.py` | `BatchingProducer`: micro-batching with a size trigger, a timer trigger, bounded in-flight batches and one future per caller. |
 | 7 | `worker.py` | The heart. `_consume` (l.123), `_run` (l.261, timeouts, handlers that swallow cancellation), `_record` (l.311, outcome → retry/dead/DLQ), `_heartbeat_loop` (l.177, idle refresh), `_drain` (l.144). |
 | 8 | `scheduler.py` | `hold_leadership` (l.107, lease Lua), `promote` (l.137), `reclaim` (l.149), `enqueue_recurring` (l.186), `reconcile` (l.208). |
 | 9 | `locks.py` | `LockManager` (fencing tokens) and `TypeSlots` (distributed counting semaphore in Lua). |
@@ -112,7 +113,7 @@ publish it. Here the row *is* the message.
 
 ### Fencing tokens
 `LockManager.try_acquire`: `INCR relay:fence:{r}` produces a monotonically increasing token, then
-`SET relay:lock:{r} token NX PX ttl`. The protected resource (`fenced_write`, `store.py` l.617) only
+`SET relay:lock:{r} token NX PX ttl`. The protected resource (`fenced_write`, `store.py` l.692) only
 accepts a token greater than the last one applied. A paused holder whose lease expired is rejected even
 though it still *thinks* it holds the lock. See `test_fencing_token_rejects_a_stale_lock_holder`, and
 read Kleppmann's 2016 post "How to do distributed locking".
@@ -131,6 +132,17 @@ read Kleppmann's 2016 post "How to do distributed locking".
 `WeightedOrder` is smooth weighted round-robin (nginx's algorithm): each priority accumulates its
 weight, the largest wins and pays the total back. With 6:3:1, `high` is tried first 6 times in 10 and
 the picks are spread out. `test_low_priority_is_not_starved_by_a_high_priority_flood`.
+
+### Micro-batching the producer (issue #2)
+Profile first: one `enqueue()` = INSERT + XADD + UPDATE, and the two Postgres round trips (about 29 ms
+each at p50 with 64 in flight, mostly **waiting for a pooled connection**) dwarf Redis (2 ms). So
+`BatchingProducer` (`producer.py`) collects concurrent calls and sends them with `enqueue_many`
+(`app.py`): **3 round trips per batch instead of 3 per job**. Two triggers, whichever comes first:
+the batch is full (`max_batch`), or the oldest item has waited `max_delay_ms` (a `call_later` timer).
+Each caller awaits its own future, so it still gets its own result or exception. The trade-off is
+up to 5 ms of added latency for a lone job, in exchange for much more headroom: 1,000/s held, where
+the single producer crashed on pool timeouts (`benchmarks.md` §2b). Same idea as Kafka's `linger.ms`
++ `batch.size`, Nagle's algorithm, and DataLoader in GraphQL.
 
 ### Little's law (from the Redis-latency experiment)
 Throughput ≈ jobs in flight ÷ time per job. With 4 in flight and about 0.4 s per job (4 Redis round
@@ -208,8 +220,11 @@ behind the Postgres ceiling.
     schedule, because closed-loop tests slow the producer down when the system slows and hide queueing
     delay (coordinated omission).
 21. **Your first 200 jobs/s latency run: what went wrong?**
-    The producer was the bottleneck, reaching only 115–170 jobs/s, so its latency numbers were
-    meaningless. I reported that and measured at a sustainable 100/s instead.
+    The producer was the bottleneck, reaching only 115–170 jobs/s, so I reported that instead of the
+    latency numbers. Later I profiled it (two Postgres round trips per job, mostly pool waits), added
+    batching, and reran both producers back to back: 200/s worked with either, because the machine
+    was much less loaded than the first time. The honest win was headroom: batch held 1,000/s, single
+    fell behind at 500/s.
 22. **Why did adding 100 ms of Redis latency not change throughput at first?**
     Little's law: with 100 jobs in flight the extra latency was hidden behind the Postgres ceiling. At 4
     in flight, throughput dropped from 382 to 9.8 jobs/s.
@@ -225,6 +240,18 @@ behind the Postgres ceiling.
     PgBouncer; Redis with persistence plus monitoring of failovers; batching of status writes; KEDA
     autoscaling on queue depth; repeated benchmarks on dedicated hardware; per-tenant quotas if it
     became multi-tenant.
+
+27. **How does your batching producer decide when to send?**
+    Size or time, whichever first: flush at `max_batch` jobs, or when a timer started by the first job
+    in an empty batch fires after `max_delay_ms`. Bounded in-flight batches (a semaphore) stop a slow
+    database from turning into unbounded memory growth.
+28. **What happens to callers if a batch INSERT fails?**
+    Every future in that batch gets the exception; nothing is retried silently, because only the caller
+    knows whether retrying is safe (with an `idempotency_key` it is). Invalid job types are rejected
+    per caller *before* batching, so one bad call can't fail everyone else's.
+29. **Why pass the batch as one JSON array instead of a big `VALUES (...), (...)` list?**
+    The SQL text stays the same for any batch size, so Postgres and asyncpg reuse one prepared statement,
+    and there's no parameter-count limit (asyncpg allows 32,767 bind parameters per statement).
 
 ## 5. Things to try yourself
 
