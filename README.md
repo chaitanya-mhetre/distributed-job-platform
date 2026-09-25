@@ -63,7 +63,7 @@ More detail: [docs/delivery-guarantees.md](docs/delivery-guarantees.md) ·
 - Retries with capped exponential backoff + jitter; `PermanentError` for "don't retry"
 - Per-job timeouts, including handlers that swallow `CancelledError`
 - Dead-letter stream, with replay from the API/CLI
-- Idempotent submission (`idempotency_key`) and `ctx.once()` for side effects
+- Idempotent submission (`idempotency_key`); `ctx.once()` and `ctx.once_atomic()` (key + effect in one transaction) for side effects
 - Batched submission: `enqueue_many()` and a micro-batching producer (`app.batching()`)
 - Heartbeats, dead-worker reclaim, graceful drain on SIGTERM
 - Distributed locks with **fencing tokens**; distributed per-type concurrency limits (`max_concurrent`)
@@ -100,6 +100,9 @@ make stack
 ```python
 import asyncio
 
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncConnection
+
 from relay import JobContext, JobSpec, PermanentError, Relay
 
 app = Relay()  # settings from RELAY_* env vars (see .env.example)
@@ -112,6 +115,14 @@ async def send_email(ctx: JobContext, to: str, template: str) -> None:
     async with ctx.lock(f"user:{to}") as lease:  # lease.token is the fencing token
         if await ctx.once(f"welcome:{to}"):  # side effect at most once
             ...
+
+
+@app.job("credit_wallet")
+async def credit_wallet(ctx: JobContext, order_id: str, amount: int) -> None:
+    async def write(conn: AsyncConnection) -> None:  # same transaction as the dedupe key
+        await conn.execute(text("INSERT INTO ledger ..."), {"order": order_id, "amount": amount})
+
+    await ctx.once_atomic(f"credit:{order_id}", write)  # exactly once, even under kill -9
 
 
 @app.job("call_llm", max_concurrent=5)  # at most 5 running across all workers
@@ -195,8 +206,9 @@ background load, single runs):
   8.4 s); the batching producer kept up (499.6/s, p99 22 ms) and also held **1,000/s**, where the single
   producer crashed on connection-pool timeouts.
 - `kill -9` of a worker holding 50 jobs: all recovered in **15–17 s** (heartbeat TTL 15 s), none lost.
-- Under repeated `kill -9`: **17.6%** of jobs ran more than once; `once()` stopped duplicate side
-  effects, but **4 of 1,500** side effects were lost in its documented gap.
+- Under repeated `kill -9`: 13–17% of jobs ran more than once. `once()` stopped duplicate side effects
+  but lost **17 of 4,000** in its documented gap; `once_atomic()` lost **0 of 4,000** (twice) and
+  duplicated none. An idempotent receiver absorbed 415 duplicate deliveries with 0 lost.
 
 ## Engineering trade-offs
 
@@ -204,7 +216,8 @@ background load, single runs):
   Delays, DLQ and priorities had to be built by hand ([comparison](docs/redis-vs-kafka-vs-rabbitmq.md)).
 - **Postgres as the source of truth**: durable history and simple dashboards, at the cost of about
   4 writes per job. That's the throughput ceiling today.
-- **At-least-once, not exactly-once**: honest and measurable. Idempotency is the handler's job.
+- **At-least-once, not exactly-once**: honest and measurable. Exactly-once *effects* are possible for
+  writes to Relay's database (`once_atomic`), and via receiver idempotency keys for external systems.
 - **Heartbeat TTL (15 s)**: lower means faster recovery, but more false reclaims of paused workers.
 - **Weighted, not strict, priority**: low-priority work always makes progress, so high-priority work is
   only *mostly* first.
@@ -216,8 +229,9 @@ background load, single runs):
 - Throughput is bounded by Postgres writes per job on the **worker** side (start/finish per job).
   Submission can be batched (`enqueue_many`, `app.batching()`); status writes can't yet.
 - The per-type limit defers jobs by re-scheduling them, which adds latency under heavy contention.
-- The benchmarks come from a noisy laptop with single runs. The CI workflow is written but has
-  **not yet run on GitHub**.
+- The benchmarks come from a noisy laptop with single runs (repeat runs with error bars: issue #1).
+- `once_atomic()` only covers effects written to Relay's own Postgres database. External effects
+  (email, payments, other services) need an idempotency key honoured by the receiver.
 - No web UI actions, no multi-tenancy, no job DAGs.
 - Not published to PyPI (the name `relay` is taken; it would need another distribution name).
 

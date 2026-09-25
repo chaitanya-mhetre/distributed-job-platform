@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Exactly-once effects for database writes (#3)
+- `ctx.once_atomic(key, fn)` / `JobStore.once_atomic`: the dedupe key and the effect commit in one
+  transaction, so a crash can neither duplicate nor lose the effect. Integration tests cover
+  exceptions, cancellation mid-effect and concurrent duplicates.
+- `experiments.duplicates --effect once|atomic|receiver`. Measured under repeated kill -9 (4,000 jobs):
+  once lost 17; atomic lost 0 (twice); an idempotent receiver lost 0 and absorbed 415 duplicates.
+- Docs: why exactly-once is impossible for external calls, and the idempotent-receiver pattern.
+
 ### Producer batching (#2)
 - `JobStore.create_many`: one multi-row INSERT per batch (jsonb_to_recordset), same idempotency rules.
 - `RedisBroker.enqueue_many`: one MULTI/EXEC pipeline for the whole batch.

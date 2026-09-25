@@ -158,8 +158,35 @@ its executions, then runs a side effect guarded by `ctx.once()`.
 - **But 4 side effects never happened.** The process died after `once()` had recorded the key and
   before the side effect ran, so the retry skipped it. This is exactly the gap described in
   `ctx.once()`'s docstring, now measured.
-  - For effects that must happen exactly once, "record" and "do" must be one atomic step: the same
-    database transaction, or an idempotency key on the downstream API call.
+
+### 5b. Closing the gap (issue #3, measured 2026-09-25)
+
+`uv run python -m experiments.duplicates --jobs 4000 --kill-every 0.5 --effect <mode>`, same busy laptop,
+single runs (`atomic` twice). Raw output: `duplicates-effect-modes.log`.
+
+| `--effect` | Strategy | Jobs | Workers killed | Jobs executed > 1× | Effect > 1× | Effect **missing** |
+|---|---|---|---|---|---|---|
+| `once` | `once()` + Redis write | 4,000 | 23 | 532 | 0 | **17** |
+| `atomic` | `once_atomic()` + Postgres write | 4,000 | 43 | 655 | **0** | **0** |
+| `atomic` (repeat) | same | 4,000 | 65 | 577 | **0** | **0** |
+| `receiver` | receiver dedupes by key (HSETNX) | 4,000 | 44 | 614 | **0** | **0** (415 duplicate deliveries absorbed) |
+
+A shorter pass (1,500 jobs, a kill every 1.0 s, 4–6 kills) showed the same pattern: `once` lost 3,
+while `atomic` and `receiver` lost 0.
+
+- **`once_atomic()`** writes the dedupe key and the effect in **one Postgres transaction**. A crash
+  before COMMIT rolls back both, so the retry does it; after COMMIT both are durable, so the retry skips.
+  There's no window where one exists without the other.
+- **It only works for effects that are writes to the same database.** An email or a card charge can't
+  join a Postgres transaction. For those, exactly-once *execution* is impossible (the process can
+  always die after the external call and before recording it). The best you can get is
+  **exactly-once effect via the receiver**: send an idempotency key and let the downstream system
+  dedupe (the `receiver` mode: 415 duplicate deliveries arrived, and every one was absorbed).
+- Jobs still *executed* more than once in every mode (532–655 of 4,000). At-least-once delivery
+  doesn't change. What changed is whether the effect survives it correctly.
+- 0 of 4,000 across 108 kills is strong evidence, **not a proof**. The proof is the transaction
+  argument above, plus `tests/integration/test_once_atomic.py` (exception, cancellation mid-effect,
+  concurrent duplicates).
 
 ## 6. Redis latency (toxiproxy)
 

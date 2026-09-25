@@ -33,7 +33,7 @@ the function names won't.
 | 7 | `worker.py` | The heart. `_consume` (l.123), `_run` (l.261, timeouts, handlers that swallow cancellation), `_record` (l.311, outcome → retry/dead/DLQ), `_heartbeat_loop` (l.177, idle refresh), `_drain` (l.144). |
 | 8 | `scheduler.py` | `hold_leadership` (l.107, lease Lua), `promote` (l.137), `reclaim` (l.149), `enqueue_recurring` (l.186), `reconcile` (l.208). |
 | 9 | `locks.py` | `LockManager` (fencing tokens) and `TypeSlots` (distributed counting semaphore in Lua). |
-| 10 | `context.py` | What handlers get: `once`, `lock`, `raise_if_cancelled`. |
+| 10 | `context.py` | What handlers get: `once`, `once_atomic` (exactly-once DB effects), `lock`, `raise_if_cancelled`. |
 | 11 | `backoff.py`, `recurring.py` | Small pure functions; good warm-ups. |
 | 12 | `metrics.py`, `api/` | Observability and the HTTP surface. |
 | 13 | `tests/integration/test_m2_failures.py` | **The best documentation of behaviour.** Each test is one failure mode. |
@@ -58,8 +58,14 @@ crashes before the ack, the entry stays in the PEL and is redelivered.
    (`store.create`). The API returns 200 with the existing job instead of 201.
 2. **Redelivery**: the worker checks the row's status before running (`start_attempt` returns None,
    then it just acks).
-3. **Side effects**: `ctx.once(key)` → `job_dedupe` table. Know its gap: it can *skip* an effect if
-   the crash lands between recording the key and doing the effect (4 of 1,500 in the experiment).
+3. **Side effects**, three tools:
+   - `ctx.once(key)` → `job_dedupe`. Know its gap: it can *skip* an effect if the crash lands between
+     recording the key and doing the effect (17 of 4,000 in the experiment).
+   - `ctx.once_atomic(key, fn)` → the key and `fn`'s writes share **one transaction** (`store.once_atomic`).
+     Crash before COMMIT: both roll back, the retry redoes it. After COMMIT: both are there, the retry skips.
+     0 of 4,000 lost, twice. Only works when the effect is a write to the same database.
+   - **Idempotent receiver** for everything else: the downstream system dedupes by a key you send
+     (the `receiver` mode in `experiments/duplicates.py`). That's why payment APIs take an `Idempotency-Key`.
 
 ### Consumer groups and the PEL
 - `XGROUP CREATE ... MKSTREAM` (`broker.ensure_groups`) creates one group, `relay-workers`, per stream.
@@ -253,6 +259,20 @@ behind the Postgres ceiling.
     The SQL text stays the same for any batch size, so Postgres and asyncpg reuse one prepared statement,
     and there's no parameter-count limit (asyncpg allows 32,767 bind parameters per statement).
 
+30. **Can you get exactly-once processing?**
+    Not exactly-once *execution*: a worker can always die after doing the work and before acking. You
+    can get exactly-once *effects*. For writes to the same database, put the dedupe key and the effect
+    in one transaction (`once_atomic`). For external systems, send an idempotency key and let the
+    receiver dedupe. Measured: `once()` lost 17 of 4,000 effects under kill -9; `once_atomic()` lost 0.
+31. **Why doesn't `once()` + "do the effect" work, if `once()` is durable?**
+    Two steps, two commits. Durability of the first says nothing about the second. The crash between
+    them leaves "recorded but not done", and the retry trusts the record and skips. Atomicity, not
+    durability, is what's missing.
+32. **Two workers run the same reclaimed job at the same moment. What does `once_atomic` do?**
+    Both INSERT the same primary key. The second blocks on the first's row lock. If the first commits,
+    the second's `ON CONFLICT DO NOTHING` returns no row and it skips; if the first rolls back, the second
+    proceeds. A test runs 5 concurrent copies and gets exactly one effect.
+
 ## 5. Things to try yourself
 
 - Lower `heartbeat_ttl_s` to 3 in `experiments/kill_worker.py` and see how recovery time and false
@@ -261,4 +281,7 @@ behind the Postgres ceiling.
   `test_stalled_worker_cannot_overwrite_the_new_owners_attempt`, and read the failure.
 - Swap the order in `scheduler.promote` (Redis first) and run `test_m2_failures.py` a few times.
 - Implement `XAUTOCLAIM`-based reclaim as an alternative and compare the code.
+- Change the `count` handler's `atomic` mode to do its INSERT through a *new* connection instead of the
+  one `once_atomic` passes in, rerun `experiments.duplicates --effect atomic`, and watch duplicated
+  effects appear (the effect now commits before the key does).
 - Add a RabbitMQ `Broker` behind the same interface and repeat the drain benchmark.
