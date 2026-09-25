@@ -9,6 +9,7 @@ from collections import Counter
 from relay import JobContext, JobStatus, PermanentError, Priority, Relay
 from relay.scheduler import Scheduler
 from relay.store import NewJob
+from tests.integration.conftest import wait_for
 from tests.integration.helpers import (
     FAST_SCHEDULER,
     running_scheduler,
@@ -53,6 +54,11 @@ async def test_exhausted_retries_go_to_dlq_and_can_be_replayed(relay: Relay) -> 
     job = (await relay.enqueue("broken")).job
     async with running_scheduler(relay), running_worker(relay):
         await wait_status(relay, job.id, JobStatus.DEAD)
+
+        async def in_dlq() -> bool:  # row is marked dead just before the DLQ XADD
+            return await relay.broker.dlq_size() == 1
+
+        await wait_for(in_dlq)
         letters = await relay.broker.list_dead_letters()
         assert [d.job_id for d in letters] == [job.id]
         assert "RuntimeError: bug" in letters[0].error
