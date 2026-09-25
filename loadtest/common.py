@@ -87,6 +87,9 @@ async def fresh_relay(redis_url: str = REDIS_URL, **settings: Any) -> Relay:
             database_url=DB_URL,
             namespace=f"bench-{uuid.uuid4().hex[:8]}",
             max_queue_depth=0,
+            # The producer (this process) submits every job; with a worker-sized pool of 8 it
+            # was the bottleneck of the first latency run, not Relay's workers.
+            db_pool_size=settings.pop("db_pool_size", 24),
             **settings,
         )
     )

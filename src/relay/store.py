@@ -101,7 +101,9 @@ class JobStore:
             "timeout_s": new.timeout_s,
             "run_at": run_at,
         }
-        async with self.engine.begin() as conn:
+        # autocommit: the INSERT is one atomic statement; the follow-up SELECT only runs on an
+        # idempotent hit and reads a row that is already committed.
+        async with self.autocommit.connect() as conn:
             row = (
                 (
                     await conn.execute(
@@ -207,7 +209,7 @@ class JobStore:
     # --- dispatch bookkeeping -----------------------------------------------------------
 
     async def mark_dispatched(self, job_ids: Sequence[UUID]) -> None:
-        async with self.engine.begin() as conn:
+        async with self.autocommit.connect() as conn:
             await conn.execute(
                 text("UPDATE jobs SET dispatched_at = now() WHERE id = ANY(:ids)"),
                 {"ids": list(job_ids)},
