@@ -330,6 +330,7 @@ class Worker:
                 outcome=label,
                 error=error,
                 duration_ms=ms,
+                worker_id=self.worker_id,
                 sets=sets,
                 params=params,
             )

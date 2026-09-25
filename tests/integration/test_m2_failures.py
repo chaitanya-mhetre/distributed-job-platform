@@ -221,3 +221,35 @@ async def test_mixed_chaos_every_job_reaches_one_terminal_state(relay: Relay) ->
     assert by_mode.get("error", {JobStatus.DEAD}) == {JobStatus.DEAD}
     dead = sum(j.status is JobStatus.DEAD for j in jobs.values())
     assert await relay.broker.dlq_size() == dead
+
+
+async def test_stalled_worker_cannot_overwrite_the_new_owners_attempt(relay: Relay) -> None:
+    """Worker A stalls past its TTL, the job is reclaimed and started by B. When A wakes up and
+    reports its outcome, the write must be rejected: B owns the job now."""
+    job = (await relay.enqueue("anything")).job
+    a = await relay.store.start_attempt(job.id, "worker-a")
+    assert a is not None
+    await relay.store.mark_queued(job.id)  # what the reaper does
+    b = await relay.store.start_attempt(job.id, "worker-b")
+    assert b is not None and b.attempts == 2
+
+    stale = await relay.store.finish(
+        job.id,
+        JobStatus.SUCCEEDED,
+        attempt=1,
+        outcome="succeeded",
+        error=None,
+        duration_ms=1,
+        worker_id="worker-a",
+    )
+    assert stale is None
+    fresh = await relay.store.finish(
+        job.id,
+        JobStatus.SUCCEEDED,
+        attempt=2,
+        outcome="succeeded",
+        error=None,
+        duration_ms=1,
+        worker_id="worker-b",
+    )
+    assert fresh is not None and fresh.status is JobStatus.SUCCEEDED

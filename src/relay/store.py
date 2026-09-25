@@ -306,16 +306,21 @@ class JobStore:
         outcome: str,
         error: str | None,
         duration_ms: int,
+        worker_id: str,
         sets: str = "",
         params: dict[str, Any] | None = None,
     ) -> Job | None:
         """Record the end of an attempt: move the job to `target` (if allowed) and close the
-        job_attempts row, in one statement / one round trip."""
+        job_attempts row, in one statement / one round trip.
+
+        `locked_by = :worker` matters: if this worker stalled past its heartbeat TTL, the job may
+        have been reclaimed and started by another worker. The stale worker's outcome must not
+        overwrite the new owner's attempt, so its UPDATE matches nothing."""
         extra = f", {sets}" if sets else ""
         sql = f"""
             WITH j AS (
                 UPDATE jobs SET status = :target, updated_at = now(){extra}
-                WHERE id = :id AND status = ANY(:from)
+                WHERE id = :id AND status = ANY(:from) AND locked_by = :worker
                 RETURNING *
             ), a AS (
                 UPDATE job_attempts SET finished_at = now(), outcome = :outcome,
@@ -337,6 +342,7 @@ class JobStore:
                             "outcome": outcome,
                             "error": error,
                             "ms": duration_ms,
+                            "worker": worker_id,
                         }
                         | (params or {}),
                     )
