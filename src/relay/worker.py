@@ -34,7 +34,7 @@ from typing import Any
 
 from relay.app import Relay
 from relay.backoff import backoff_seconds
-from relay.broker import Message
+from relay.broker import DEFAULT_WEIGHTS, Message, WeightedOrder
 from relay.context import JobContext
 from relay.keys import GROUP
 from relay.models import Job, PermanentError, Priority
@@ -73,6 +73,8 @@ class WorkerConfig:
     backoff_base_s: float = 1.0
     backoff_cap_s: float = 300.0
     queues: list[Priority] = field(default_factory=lambda: list(Priority))
+    # weighted polling: high is tried first 6 times in 10, default 3, low 1 (no starvation)
+    weights: dict[Priority, int] = field(default_factory=lambda: dict(DEFAULT_WEIGHTS))
 
 
 class Worker:
@@ -83,6 +85,7 @@ class Worker:
         self._inflight: dict[uuid.UUID, InFlight] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._stopping = asyncio.Event()
+        self._weighted = WeightedOrder({p: self.cfg.weights[p] for p in self.cfg.queues})
 
     # --- lifecycle ----------------------------------------------------------------------
 
@@ -128,7 +131,7 @@ class Worker:
                 task.add_done_callback(self._tasks.discard)
 
     def _order(self) -> list[Priority]:
-        return list(self.cfg.queues)
+        return self._weighted.next_order()
 
     async def _drain(self) -> None:
         """Let in-flight jobs finish for up to drain_timeout_s, then stop them *without* acking,
