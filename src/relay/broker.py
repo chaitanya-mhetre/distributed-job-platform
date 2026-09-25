@@ -24,7 +24,7 @@ import redis.asyncio as aioredis
 from redis.exceptions import ResponseError
 
 from relay.keys import GROUP, Keys
-from relay.models import Priority
+from relay.models import Job, JobStatus, Priority
 
 # Moves the given (due) jobs from the delayed ZSET into their priority stream, atomically.
 # Atomic matters: two schedulers, or a crash half-way, must never drop or double-add a job.
@@ -150,6 +150,26 @@ class RedisBroker:
             self.keys.queue(priority), {"job_id": str(job_id), "type": job_type}
         )
         return str(entry_id)
+
+    async def enqueue_many(self, jobs: Sequence[Job]) -> None:
+        """Dispatch many jobs in one round trip (MULTI/EXEC pipeline).
+
+        Queued jobs go to their priority stream, scheduled ones to the delayed ZSET, exactly as
+        enqueue()/schedule() would. MULTI makes it all-or-nothing: if the call fails, none are
+        in Redis and none get marked dispatched, so reconciliation re-sends the whole batch.
+        """
+        if not jobs:
+            return
+        async with self.redis.pipeline(transaction=True) as pipe:
+            for job in jobs:
+                if job.status is JobStatus.SCHEDULED:
+                    pipe.hset(self.keys.delayed_meta, str(job.id), f"{job.priority}|{job.type}")
+                    pipe.zadd(self.keys.delayed, {str(job.id): job.run_at.timestamp() * 1000})
+                else:
+                    pipe.xadd(
+                        self.keys.queue(job.priority), {"job_id": str(job.id), "type": job.type}
+                    )
+            await pipe.execute()
 
     async def schedule(
         self, job_id: UUID, job_type: str, priority: Priority, run_at: datetime

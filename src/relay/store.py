@@ -84,13 +84,11 @@ class JobStore:
 
     # --- create / read ----------------------------------------------------------------
 
-    async def create(self, new: NewJob) -> tuple[Job, bool]:
-        """Insert a job. Returns (job, created). created=False means an idempotent hit:
-        a job with the same (type, idempotency_key) already exists and is returned instead."""
-        now = datetime.now(UTC)
+    @staticmethod
+    def _new_job_params(new: NewJob, now: datetime) -> dict[str, Any]:
         run_at = new.run_at or now
         status = JobStatus.SCHEDULED if run_at > now else JobStatus.QUEUED
-        params = {
+        return {
             "id": uuid4(),
             "type": new.type,
             "priority": new.priority.value,
@@ -101,6 +99,11 @@ class JobStore:
             "timeout_s": new.timeout_s,
             "run_at": run_at,
         }
+
+    async def create(self, new: NewJob) -> tuple[Job, bool]:
+        """Insert a job. Returns (job, created). created=False means an idempotent hit:
+        a job with the same (type, idempotency_key) already exists and is returned instead."""
+        params = self._new_job_params(new, datetime.now(UTC))
         # autocommit: the INSERT is one atomic statement; the follow-up SELECT only runs on an
         # idempotent hit and reads a row that is already committed.
         async with self.autocommit.connect() as conn:
@@ -137,6 +140,78 @@ class JobStore:
                 .one()
             )
             return _row_to_job(existing), False
+
+    async def create_many(self, news: Sequence[NewJob]) -> list[tuple[Job, bool]]:
+        """Insert many jobs in ONE statement (one round trip instead of one per job).
+
+        Same semantics as `create()` for each item, returned in input order. Rows are passed
+        as a single JSON array and expanded server-side with jsonb_to_recordset, so the SQL
+        text is the same for any batch size (one prepared statement, no giant VALUES list).
+        Two items with the same (type, idempotency_key) in one batch: the first is created,
+        the second is an idempotent hit on it.
+        """
+        if not news:
+            return []
+        now = datetime.now(UTC)
+        params = [self._new_job_params(n, now) for n in news]
+        rows_json = json.dumps(
+            [
+                p
+                | {
+                    "id": str(p["id"]),
+                    "payload": json.loads(p["payload"]),
+                    "run_at": p["run_at"].isoformat(),
+                }
+                for p in params
+            ]
+        )
+        async with self.autocommit.connect() as conn:
+            inserted = {
+                r["id"]: _row_to_job(r)
+                for r in (
+                    await conn.execute(
+                        text(
+                            """
+                        INSERT INTO jobs (id, type, priority, payload, idempotency_key, status,
+                                          max_attempts, timeout_s, run_at)
+                        SELECT r.id, r.type, r.priority, r.payload, r.key, r.status,
+                               r.max_attempts, r.timeout_s, r.run_at
+                        FROM ROWS FROM (jsonb_to_recordset(CAST(:rows AS jsonb)) AS (
+                            id uuid, type text, priority text, payload jsonb, key text,
+                            status text, max_attempts int, timeout_s int, run_at timestamptz)
+                        ) WITH ORDINALITY AS r(id, type, priority, payload, key, status,
+                                               max_attempts, timeout_s, run_at, ord)
+                        ORDER BY r.ord
+                        ON CONFLICT (type, idempotency_key) WHERE idempotency_key IS NOT NULL
+                        DO NOTHING
+                        RETURNING *
+                        """
+                        ),
+                        {"rows": rows_json},
+                    )
+                ).mappings()
+            }
+            missing = [p for p in params if p["id"] not in inserted]
+            existing: dict[tuple[str, str], Job] = {}
+            if missing:
+                found = await conn.execute(
+                    text(
+                        "SELECT j.* FROM jobs j"
+                        " JOIN unnest(CAST(:types AS text[]), CAST(:keys AS text[])) AS k(t, key)"
+                        " ON j.type = k.t AND j.idempotency_key = k.key"
+                    ),
+                    {"types": [p["type"] for p in missing], "keys": [p["key"] for p in missing]},
+                )
+                for r in found.mappings():
+                    existing[(r["type"], r["idempotency_key"])] = _row_to_job(r)
+        out: list[tuple[Job, bool]] = []
+        for p in params:
+            job = inserted.get(p["id"])
+            if job is not None:
+                out.append((job, True))
+            else:
+                out.append((existing[(p["type"], p["key"])], False))
+        return out
 
     async def get(self, job_id: UUID) -> Job | None:
         async with self.engine.connect() as conn:
