@@ -1,0 +1,31 @@
+# Host ports are chosen to avoid clashing with the other Growth projects.
+name: relay
+
+x-app: &app
+  build: .
+  environment:
+    RELAY_REDIS_URL: redis://:relaydev@redis:6379/0
+    RELAY_DATABASE_URL: postgresql+asyncpg://relay:relay@postgres:5432/relay
+    RELAY_API_KEY: ${RELAY_API_KEY:-dev-key}
+  depends_on:
+    redis: {condition: service_healthy}
+    postgres: {condition: service_healthy}
+
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "relaydev", "--appendonly", "yes"]
+    ports: ["56384:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "relaydev", "ping"]
+      interval: 2s
+      retries: 20
+
+  postgres:
+    image: postgres:16-alpine
+    environment: {POSTGRES_USER: relay, POSTGRES_PASSWORD: relay, POSTGRES_DB: relay}
+    ports: ["55437:5432"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "relay"]
+      interval: 2s
+      retries: 20
