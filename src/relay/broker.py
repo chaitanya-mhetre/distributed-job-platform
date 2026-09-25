@@ -26,22 +26,26 @@ from redis.exceptions import ResponseError
 from relay.keys import GROUP, Keys
 from relay.models import Priority
 
-# Moves due jobs from the delayed ZSET into their priority stream, atomically.
-# Atomic matters: two schedulers (or a crash half-way) must never drop or double-add a job.
+# Moves the given (due) jobs from the delayed ZSET into their priority stream, atomically.
+# Atomic matters: two schedulers, or a crash half-way, must never drop or double-add a job.
+# A job that is no longer in the ZSET (cancelled, or promoted by someone else) is skipped.
 _PROMOTE_LUA = """
-local due = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, tonumber(ARGV[2]))
-for _, job_id in ipairs(due) do
-  local meta = redis.call('HGET', KEYS[2], job_id)
-  redis.call('ZREM', KEYS[1], job_id)
-  redis.call('HDEL', KEYS[2], job_id)
-  if meta then
-    local sep = string.find(meta, '|', 1, true)
-    local priority = string.sub(meta, 1, sep - 1)
-    local job_type = string.sub(meta, sep + 1)
-    redis.call('XADD', ARGV[3] .. ':q:' .. priority, '*', 'job_id', job_id, 'type', job_type)
+-- ARGV[1] = key namespace, ARGV[2..n] = job ids
+local moved = {}
+for i = 2, #ARGV do
+  local job_id = ARGV[i]
+  if redis.call('ZREM', KEYS[1], job_id) == 1 then
+    local meta = redis.call('HGET', KEYS[2], job_id)
+    redis.call('HDEL', KEYS[2], job_id)
+    if meta then
+      local sep = string.find(meta, '|', 1, true)
+      local stream = ARGV[1] .. ':q:' .. string.sub(meta, 1, sep - 1)
+      redis.call('XADD', stream, '*', 'job_id', job_id, 'type', string.sub(meta, sep + 1))
+      table.insert(moved, job_id)
+    end
   end
 end
-return due
+return moved
 """
 
 
@@ -163,12 +167,24 @@ class RedisBroker:
             removed, _ = await pipe.execute()
         return bool(removed)
 
-    async def promote_due(self, now: datetime, limit: int = 500) -> list[UUID]:
-        due = await self._promote(
-            keys=[self.keys.delayed, self.keys.delayed_meta],
-            args=[now.timestamp() * 1000, limit, self.keys.ns],
+    async def due(self, now: datetime, limit: int = 500) -> list[UUID]:
+        """Delayed jobs whose run_at has passed (read-only)."""
+        ids = await self.redis.zrangebyscore(
+            self.keys.delayed, "-inf", now.timestamp() * 1000, start=0, num=limit
         )
-        return [UUID(j) for j in cast(list[str], due)]
+        return [UUID(str(j)) for j in ids]
+
+    async def promote(self, job_ids: Sequence[UUID]) -> list[UUID]:
+        """Move these jobs from the ZSET to their streams. Call only after Postgres already
+        says 'queued': the moment an entry is in a stream a worker may pick it up, and the
+        worker only runs jobs whose row is 'queued'."""
+        if not job_ids:
+            return []
+        moved = await self._promote(
+            keys=[self.keys.delayed, self.keys.delayed_meta],
+            args=[self.keys.ns, *(str(j) for j in job_ids)],
+        )
+        return [UUID(j) for j in cast(list[str], moved)]
 
     # --- consuming ----------------------------------------------------------------------
 
@@ -255,31 +271,31 @@ class RedisBroker:
         )
         return [str(r["message_id"]) for r in rows]
 
-    async def requeue(self, stream: str, entry_ids: Sequence[str], min_idle_ms: int) -> list[UUID]:
-        """Take pending entries away from their (dead or stuck) consumer and put a fresh copy at
-        the tail of the stream so any live worker picks them up with a normal `>` read.
+    async def claim(self, stream: str, entry_ids: Sequence[str], min_idle_ms: int) -> list[Entry]:
+        """Take pending entries away from their (dead or stuck) consumer.
 
         XCLAIM with min-idle-time only claims entries that are *still* pending and idle, so if
-        the original worker acks in the meantime we simply don't touch that entry.
+        the original worker acks in the meantime we simply don't get that entry.
         """
         if not entry_ids:
             return []
         raw: Any = await self.redis.xclaim(
             stream, GROUP, "relay-reaper", min_idle_time=min_idle_ms, message_ids=list(entry_ids)
         )
-        claimed = _entries(raw)
-        job_ids: list[UUID] = []
+        return _entries(raw)
+
+    async def republish(self, stream: str, claimed: Sequence[Entry]) -> None:
+        """Put a fresh copy of claimed entries at the tail of the stream (so any live worker
+        gets them with a normal `>` read) and drop the old ones."""
+        if not claimed:
+            return
         async with self.redis.pipeline(transaction=True) as pipe:
             for entry_id, fields in claimed:
-                if not fields:  # entry was deleted from the stream meanwhile
-                    pipe.xack(stream, GROUP, entry_id)
-                    continue
-                pipe.xadd(stream, {"job_id": fields["job_id"], "type": fields["type"]})
+                if fields:  # empty = entry was deleted from the stream meanwhile
+                    pipe.xadd(stream, {"job_id": fields["job_id"], "type": fields["type"]})
                 pipe.xack(stream, GROUP, entry_id)
                 pipe.xdel(stream, entry_id)
-                job_ids.append(UUID(fields["job_id"]))
             await pipe.execute()
-        return job_ids
 
     async def delete_consumer(self, stream: str, consumer: str) -> None:
         with contextlib.suppress(ResponseError):
