@@ -1,0 +1,25 @@
+{'workers': 1, 'concurrency_per_worker': 50, 'jobs': 20000, 'not_succeeded': 0, 'drain_seconds': 61.19, 'throughput_jobs_per_s': 326.9, 'sdk_submit_rate_jobs_per_s': 493.4}
+{'workers': 2, 'concurrency_per_worker': 50, 'jobs': 20000, 'not_succeeded': 0, 'drain_seconds': 35.03, 'throughput_jobs_per_s': 570.9, 'sdk_submit_rate_jobs_per_s': 605.6}
+{'workers': 4, 'concurrency_per_worker': 50, 'jobs': 20000, 'not_succeeded': 0, 'drain_seconds': 32.13, 'throughput_jobs_per_s': 622.6, 'sdk_submit_rate_jobs_per_s': 776.6}
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/home/chaitanya/Desktop/Growth/projects/distributed-job-platform/loadtest/throughput.py", line 191, in <module>
+    main()
+  File "/home/chaitanya/Desktop/Growth/projects/distributed-job-platform/loadtest/throughput.py", line 186, in main
+    report = asyncio.run(drain(args) if args.mode == "drain" else latency(args))
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chaitanya/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 195, in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+  File "/home/chaitanya/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/asyncio/runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/chaitanya/.local/share/uv/python/cpython-3.12.14-linux-x86_64-gnu/lib/python3.12/asyncio/base_events.py", line 691, in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/home/chaitanya/Desktop/Growth/projects/distributed-job-platform/loadtest/throughput.py", line 101, in drain
+    await wait_terminal(relay, args.jobs, timeout_s=600)
+  File "/home/chaitanya/Desktop/Growth/projects/distributed-job-platform/loadtest/throughput.py", line 59, in wait_terminal
+    raise TimeoutError(f"only {done}/{n} jobs finished in {timeout_s}s: {counts}")
+TimeoutError: only 9058/20000 jobs finished in 600s: {'succeeded': 9058, 'queued': 7466, 'running': 3476}

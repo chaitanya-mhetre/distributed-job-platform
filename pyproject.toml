@@ -48,7 +48,7 @@ select = ["E", "F", "I", "B", "UP", "SIM", "N", "ASYNC"]
 
 [tool.mypy]
 strict = true
-files = ["src", "tests"]
+files = ["src", "tests", "loadtest", "experiments"]
 plugins = ["pydantic.mypy"]
 
 [tool.pytest.ini_options]
