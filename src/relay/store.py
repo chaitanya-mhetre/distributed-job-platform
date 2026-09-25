@@ -378,3 +378,156 @@ class JobStore:
         async with self.engine.connect() as conn:
             rows = await conn.execute(text("SELECT status, count(*) FROM jobs GROUP BY status"))
             return {str(s): int(c) for s, c in rows}
+
+    # --- once / dedupe ------------------------------------------------------------------
+
+    async def once(self, key: str, job_id: UUID) -> bool:
+        """True the first time `key` is seen, False ever after."""
+        async with self.engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    text(
+                        "INSERT INTO job_dedupe (key, job_id) VALUES (:key, :job_id)"
+                        " ON CONFLICT (key) DO NOTHING RETURNING key"
+                    ),
+                    {"key": key, "job_id": job_id},
+                )
+            ).first()
+        return row is not None
+
+    # --- recurring jobs -----------------------------------------------------------------
+
+    async def create_recurring(self, r: NewRecurring) -> RecurringJob:
+        async with self.engine.begin() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text(
+                            """
+                        INSERT INTO recurring_jobs (id, name, cron, type, payload, priority,
+                                                    enabled, last_enqueued_at)
+                        VALUES (:id, :name, :cron, :type, CAST(:payload AS jsonb), :priority,
+                                :enabled, now())
+                        RETURNING *
+                        """
+                        ),
+                        {
+                            "id": uuid4(),
+                            "name": r.name,
+                            "cron": r.cron,
+                            "type": r.type,
+                            "payload": json.dumps(r.payload),
+                            "priority": r.priority.value,
+                            "enabled": r.enabled,
+                        },
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        return RecurringJob.of(row)
+
+    async def list_recurring(self, *, enabled_only: bool = False) -> list[RecurringJob]:
+        sql = "SELECT * FROM recurring_jobs"
+        if enabled_only:
+            sql += " WHERE enabled"
+        async with self.engine.connect() as conn:
+            rows = (await conn.execute(text(sql + " ORDER BY name"))).mappings()
+            return [RecurringJob.of(r) for r in rows]
+
+    async def get_recurring(self, rid: UUID) -> RecurringJob | None:
+        async with self.engine.connect() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        text("SELECT * FROM recurring_jobs WHERE id = :id"), {"id": rid}
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return RecurringJob.of(row) if row else None
+
+    async def update_recurring(self, rid: UUID, **fields: Any) -> RecurringJob | None:
+        allowed = {"cron", "payload", "priority", "enabled"}
+        sets: list[str] = []
+        params: dict[str, Any] = {"id": rid}
+        for k, v in fields.items():
+            if k not in allowed or v is None:
+                continue
+            if k == "payload":
+                sets.append("payload = CAST(:payload AS jsonb)")
+                params[k] = json.dumps(v)
+            else:
+                sets.append(f"{k} = :{k}")
+                params[k] = v.value if isinstance(v, Priority) else v
+        if not sets:
+            return await self.get_recurring(rid)
+        async with self.engine.begin() as conn:
+            row = (
+                (
+                    await conn.execute(
+                        # column names come from the `allowed` set above, never from user input
+                        text(
+                            f"UPDATE recurring_jobs SET {', '.join(sets)}"
+                            " WHERE id = :id RETURNING *"
+                        ),
+                        params,
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return RecurringJob.of(row) if row else None
+
+    async def delete_recurring(self, rid: UUID) -> bool:
+        async with self.engine.begin() as conn:
+            res = await conn.execute(text("DELETE FROM recurring_jobs WHERE id = :id"), {"id": rid})
+        return bool(res.rowcount)
+
+    async def set_last_enqueued(self, rid: UUID, fire_at: datetime) -> None:
+        async with self.engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "UPDATE recurring_jobs SET last_enqueued_at = :t"
+                    " WHERE id = :id AND (last_enqueued_at IS NULL OR last_enqueued_at < :t)"
+                ),
+                {"id": rid, "t": fire_at},
+            )
+
+
+@dataclass(frozen=True, slots=True)
+class NewRecurring:
+    name: str
+    cron: str
+    type: str
+    payload: dict[str, Any]
+    priority: Priority = Priority.DEFAULT
+    enabled: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class RecurringJob:
+    id: UUID
+    name: str
+    cron: str
+    type: str
+    payload: dict[str, Any]
+    priority: Priority
+    enabled: bool
+    last_enqueued_at: datetime | None
+    created_at: datetime
+
+    @classmethod
+    def of(cls, row: RowMapping) -> RecurringJob:
+        return cls(
+            id=row["id"],
+            name=row["name"],
+            cron=row["cron"],
+            type=row["type"],
+            payload=row["payload"],
+            priority=Priority(row["priority"]),
+            enabled=row["enabled"],
+            last_enqueued_at=row["last_enqueued_at"],
+            created_at=row["created_at"],
+        )

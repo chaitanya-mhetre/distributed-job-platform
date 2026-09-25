@@ -52,7 +52,15 @@ async def relay() -> AsyncIterator[Relay]:
         pytest.skip(f"Redis/Postgres not reachable ({type(exc).__name__}); run `make up`")
     await app.setup()  # real errors here fail the test instead of skipping it
     async with app.store.engine.begin() as conn:
-        await conn.execute(text("TRUNCATE jobs CASCADE"))
+        tables = (
+            await conn.execute(
+                text(
+                    "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+                    " AND tablename <> 'schema_migrations'"
+                )
+            )
+        ).scalars()
+        await conn.execute(text(f"TRUNCATE {', '.join(tables)} CASCADE"))
     yield app
     keys = [k async for k in app.broker.redis.scan_iter(f"{app.settings.namespace}:*")]
     if keys:

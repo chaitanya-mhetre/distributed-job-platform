@@ -23,7 +23,8 @@ from relay.broker import RedisBroker
 from relay.config import Settings
 from relay.db import make_engine, migrate
 from relay.models import Job, JobStatus, Priority
-from relay.store import JobStore, NewJob
+from relay.recurring import validate_cron
+from relay.store import JobStore, NewJob, NewRecurring, RecurringJob
 
 Handler = Callable[..., Coroutine[Any, Any, Any]]
 
@@ -165,3 +166,19 @@ class Relay:
         job = await self.retry(letter.job_id)
         await self.broker.delete_dead_letter(entry_id)
         return job
+
+    async def add_recurring(
+        self,
+        name: str,
+        cron: str,
+        job_type: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        priority: Priority | str = Priority.DEFAULT,
+    ) -> RecurringJob:
+        validate_cron(cron)
+        if self.registry and job_type not in self.registry:
+            raise UnknownJobTypeError(job_type)
+        return await self.store.create_recurring(
+            NewRecurring(name, cron, job_type, payload or {}, Priority(priority))
+        )

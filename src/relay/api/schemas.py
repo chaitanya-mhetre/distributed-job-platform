@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from relay.broker import DeadLetter
 from relay.models import Job, JobStatus, Priority
-from relay.store import Attempt
+from relay.store import Attempt, RecurringJob
 
 
 class JobIn(BaseModel):
@@ -75,3 +75,33 @@ class DeadLetterOut(BaseModel):
     @classmethod
     def of(cls, d: DeadLetter) -> DeadLetterOut:
         return cls(entry_id=d.entry_id, job_id=d.job_id, type=d.job_type, error=d.error)
+
+
+class RecurringIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    cron: str
+    type: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    priority: Priority = Priority.DEFAULT
+
+
+class RecurringPatch(BaseModel):
+    cron: str | None = None
+    payload: dict[str, Any] | None = None
+    priority: Priority | None = None
+    enabled: bool | None = None
+
+
+class RecurringOut(BaseModel):
+    id: UUID
+    name: str
+    cron: str
+    type: str
+    payload: dict[str, Any]
+    priority: Priority
+    enabled: bool
+    last_enqueued_at: datetime | None
+
+    @classmethod
+    def of(cls, r: RecurringJob) -> RecurringOut:
+        return cls(**{f: getattr(r, f) for f in cls.model_fields})

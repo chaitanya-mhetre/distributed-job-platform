@@ -6,7 +6,8 @@ Each tick, the leader:
   1. promotes delayed jobs whose run_at has passed (ZSET -> stream, atomically in Lua)
   2. reclaims work from dead workers (heartbeat key gone) and from stream entries that have been
      idle too long (live workers refresh their entries' idle time every heartbeat)
-  3. reconciles: re-dispatches rows that were never handed to Redis (crash between INSERT and
+  3. enqueues recurring (cron) jobs that are due
+  4. reconciles: re-dispatches rows that were never handed to Redis (crash between INSERT and
      XADD). Runs every `reconcile_every` ticks, not every tick.
 """
 
@@ -24,6 +25,7 @@ from typing import Any
 from uuid import UUID
 
 from relay.app import Relay
+from relay.recurring import latest_fire
 
 log = logging.getLogger("relay.scheduler")
 
@@ -65,6 +67,7 @@ class SchedulerConfig:
 class TickResult:
     promoted: int = 0
     reclaimed: int = 0
+    recurring: int = 0
     reconciled: int = 0
 
 
@@ -118,6 +121,7 @@ class Scheduler:
         result = TickResult()
         result.promoted = await self.promote()
         result.reclaimed = await self.reclaim()
+        result.recurring = await self.enqueue_recurring()
         if self._ticks % self.cfg.reconcile_every == 0:
             result.reconciled = await self.reconcile()
         return result
@@ -171,7 +175,29 @@ class Scheduler:
             total += len(job_ids)
         return total
 
-    # --- 3. reconcile -------------------------------------------------------------------
+    # --- 3. recurring ------------------------------------------------------------------
+
+    async def enqueue_recurring(self) -> int:
+        """Enqueue due cron jobs. The idempotency key is derived from the *scheduled* fire
+        time, so even if two schedulers briefly both think they're leader (lease expired
+        during a pause), each period produces exactly one job."""
+        now = datetime.now(UTC)
+        fired = 0
+        for rec in await self.relay.store.list_recurring(enabled_only=True):
+            fire_at = latest_fire(rec.cron, rec.last_enqueued_at or rec.created_at, now)
+            if fire_at is None:
+                continue
+            res = await self.relay.enqueue(
+                rec.type,
+                rec.payload,
+                priority=rec.priority,
+                idempotency_key=f"recurring:{rec.name}:{fire_at.isoformat()}",
+            )
+            await self.relay.store.set_last_enqueued(rec.id, fire_at)
+            fired += int(res.created)
+        return fired
+
+    # --- 4. reconcile -------------------------------------------------------------------
 
     async def reconcile(self) -> int:
         jobs = await self.relay.store.undispatched(self.cfg.reconcile_after_s)

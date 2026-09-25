@@ -8,10 +8,20 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
+from sqlalchemy.exc import IntegrityError
 
-from relay.api.schemas import DeadLetterOut, JobIn, JobOut, JobPage
+from relay.api.schemas import (
+    DeadLetterOut,
+    JobIn,
+    JobOut,
+    JobPage,
+    RecurringIn,
+    RecurringOut,
+    RecurringPatch,
+)
 from relay.app import Relay, UnknownJobTypeError
 from relay.models import JobStatus
+from relay.recurring import validate_cron
 
 
 def create_app(relay: Relay) -> FastAPI:
@@ -101,6 +111,41 @@ def create_app(relay: Relay) -> FastAPI:
             status=status_, job_type=type_, cursor=cursor, limit=limit
         )
         return JobPage(items=[JobOut.of(j) for j in jobs], next_cursor=nxt)
+
+    @app.post("/v1/recurring-jobs", response_model=RecurringOut, status_code=201, dependencies=auth)
+    async def create_recurring(body: RecurringIn) -> RecurringOut:
+        try:
+            rec = await relay.add_recurring(
+                body.name, body.cron, body.type, body.payload, priority=body.priority
+            )
+        except UnknownJobTypeError as exc:
+            raise HTTPException(422, f"unknown job type {exc}") from exc
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except IntegrityError as exc:
+            raise HTTPException(409, f"recurring job {body.name!r} already exists") from exc
+        return RecurringOut.of(rec)
+
+    @app.get("/v1/recurring-jobs", response_model=list[RecurringOut], dependencies=auth)
+    async def list_recurring() -> list[RecurringOut]:
+        return [RecurringOut.of(r) for r in await relay.store.list_recurring()]
+
+    @app.patch("/v1/recurring-jobs/{rid}", response_model=RecurringOut, dependencies=auth)
+    async def patch_recurring(rid: UUID, body: RecurringPatch) -> RecurringOut:
+        if body.cron is not None:
+            try:
+                validate_cron(body.cron)
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+        rec = await relay.store.update_recurring(rid, **body.model_dump(exclude_none=True))
+        if rec is None:
+            raise HTTPException(404, "recurring job not found")
+        return RecurringOut.of(rec)
+
+    @app.delete("/v1/recurring-jobs/{rid}", status_code=204, dependencies=auth)
+    async def delete_recurring(rid: UUID) -> None:
+        if not await relay.store.delete_recurring(rid):
+            raise HTTPException(404, "recurring job not found")
 
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
