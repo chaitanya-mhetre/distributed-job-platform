@@ -10,14 +10,14 @@ from __future__ import annotations
 
 import base64
 import json
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import RowMapping, text
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from relay.models import Job, JobStatus, Priority, allowed_from
 
@@ -550,6 +550,40 @@ class JobStore:
                 )
             ).first()
         return row is not None
+
+    async def once_atomic(
+        self,
+        key: str,
+        job_id: UUID,
+        effect: Callable[[AsyncConnection], Awaitable[None]],
+    ) -> bool:
+        """Run `effect(conn)` exactly once per `key`, atomically with recording the key.
+
+        The dedupe row and whatever `effect` writes through `conn` share ONE transaction:
+          - crash / exception / timeout before COMMIT: both roll back, the retry runs it again;
+          - after COMMIT: both are durable, every retry sees the key and skips.
+        So there is no "recorded but not done" gap, unlike once(). The catch: it only covers
+        effects that are writes to *this* Postgres database. An email or an HTTP call can't
+        join the transaction; those need an idempotency key on the receiving side.
+
+        Two workers running the same job at once (a reclaimed duplicate) both try the INSERT;
+        the second blocks on the primary key until the first commits (then skips) or rolls back
+        (then runs). Returns True if the effect ran.
+        """
+        async with self.engine.begin() as conn:
+            row = (
+                await conn.execute(
+                    text(
+                        "INSERT INTO job_dedupe (key, job_id) VALUES (:key, :job_id)"
+                        " ON CONFLICT (key) DO NOTHING RETURNING key"
+                    ),
+                    {"key": key, "job_id": job_id},
+                )
+            ).first()
+            if row is None:
+                return False
+            await effect(conn)
+        return True
 
     # --- recurring jobs -----------------------------------------------------------------
 

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from relay.locks import Lease
 from relay.models import Job
@@ -43,9 +46,26 @@ class JobContext:
                 await charge_card(order_id)
 
         Note the gap: if the process dies *after* once() but *before* the side effect, the
-        retry will skip it. For money, prefer an idempotency key on the downstream API call.
+        retry will skip it. If the side effect is a write to Relay's Postgres database, use
+        once_atomic() instead (no gap). For external calls (email, payments), pass an
+        idempotency key to the downstream API and let it deduplicate.
         """
         return await self.relay.store.once(key, self.job.id)
+
+    async def once_atomic(
+        self, key: str, effect: Callable[[AsyncConnection], Awaitable[None]]
+    ) -> bool:
+        """Exactly-once *effect* for database writes: the dedupe key and the effect commit in
+        the same transaction, so a crash can neither duplicate nor lose it.
+
+            async def credit(conn: AsyncConnection) -> None:
+                await conn.execute(text("INSERT INTO ledger ..."), {...})
+
+            await ctx.once_atomic(f"credit:{order_id}", credit)
+
+        Returns True if the effect ran now, False if it had already been committed.
+        """
+        return await self.relay.store.once_atomic(key, self.job.id, effect)
 
     def lock(
         self, resource: str, ttl_ms: int = 30_000, wait_s: float = 10.0
