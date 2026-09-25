@@ -1,0 +1,4 @@
+{'trial': 1, 'jobs_held_by_killed_worker': 50, 'recovery_s': 15.26, 'final_status_counts': {'succeeded': 50}}
+{'trial': 2, 'jobs_held_by_killed_worker': 50, 'recovery_s': 17.27, 'final_status_counts': {'succeeded': 50}}
+{'trial': 3, 'jobs_held_by_killed_worker': 50, 'recovery_s': 15.25, 'final_status_counts': {'succeeded': 50}}
+saved /home/chaitanya/Desktop/Growth/projects/distributed-job-platform/loadtest/out/kill_worker-20260925T140735Z.json

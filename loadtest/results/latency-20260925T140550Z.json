@@ -1,0 +1,43 @@
+{
+  "name": "latency",
+  "date_utc": "20260925T140550Z",
+  "commit": "9dd4586",
+  "machine": {
+    "cpu": "12th Gen Intel(R) Core(TM) i5-1240P",
+    "logical_cpus": 16,
+    "mem_gb": 14.8,
+    "os": "Linux 7.0.0-31-generic",
+    "python": "3.12.14",
+    "note": "laptop; Redis + Postgres in Docker on the same machine; other projects' containers were running, so treat numbers as indicative, not a benchmark"
+  },
+  "params": {
+    "mode": "latency",
+    "rate": 200.0,
+    "duration": 15.0,
+    "workers": [
+      2
+    ],
+    "concurrency": 50,
+    "job": "noop"
+  },
+  "results": [
+    {
+      "workers": 2,
+      "concurrency_per_worker": 50,
+      "target_rate": 200.0,
+      "achieved_submit_rate": 129.3,
+      "jobs": 3000,
+      "not_succeeded": 0,
+      "e2e_latency_ms": {
+        "50": 391.3,
+        "95": 1763.1,
+        "99": 2415.4
+      },
+      "e2e_latency_max_ms": 4496.3,
+      "sdk_enqueue_latency_ms": {
+        "50": 10129.4,
+        "99": 19198.8
+      }
+    }
+  ]
+}

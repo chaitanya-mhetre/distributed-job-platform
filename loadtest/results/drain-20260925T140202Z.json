@@ -1,0 +1,63 @@
+{
+  "name": "drain",
+  "date_utc": "20260925T140202Z",
+  "commit": "9dd4586",
+  "machine": {
+    "cpu": "12th Gen Intel(R) Core(TM) i5-1240P",
+    "logical_cpus": 16,
+    "mem_gb": 14.8,
+    "os": "Linux 7.0.0-31-generic",
+    "python": "3.12.14",
+    "note": "laptop; Redis + Postgres in Docker on the same machine; other projects' containers were running, so treat numbers as indicative, not a benchmark"
+  },
+  "params": {
+    "mode": "drain",
+    "jobs": 20000,
+    "workers": [
+      1,
+      2,
+      4,
+      8
+    ],
+    "concurrency": 50,
+    "job": "noop"
+  },
+  "results": [
+    {
+      "workers": 1,
+      "concurrency_per_worker": 50,
+      "jobs": 20000,
+      "not_succeeded": 0,
+      "drain_seconds": 45.42,
+      "throughput_jobs_per_s": 440.4,
+      "sdk_submit_rate_jobs_per_s": 521.6
+    },
+    {
+      "workers": 2,
+      "concurrency_per_worker": 50,
+      "jobs": 20000,
+      "not_succeeded": 0,
+      "drain_seconds": 47.59,
+      "throughput_jobs_per_s": 420.3,
+      "sdk_submit_rate_jobs_per_s": 481.6
+    },
+    {
+      "workers": 4,
+      "concurrency_per_worker": 50,
+      "jobs": 20000,
+      "not_succeeded": 0,
+      "drain_seconds": 34.84,
+      "throughput_jobs_per_s": 574.1,
+      "sdk_submit_rate_jobs_per_s": 310.9
+    },
+    {
+      "workers": 8,
+      "concurrency_per_worker": 50,
+      "jobs": 20000,
+      "not_succeeded": 0,
+      "drain_seconds": 15.77,
+      "throughput_jobs_per_s": 1268.5,
+      "sdk_submit_rate_jobs_per_s": 459.6
+    }
+  ]
+}

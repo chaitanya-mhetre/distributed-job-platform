@@ -1,0 +1,44 @@
+{
+  "name": "kill_worker",
+  "date_utc": "20260925T140735Z",
+  "commit": "9dd4586",
+  "machine": {
+    "cpu": "12th Gen Intel(R) Core(TM) i5-1240P",
+    "logical_cpus": 16,
+    "mem_gb": 14.8,
+    "os": "Linux 7.0.0-31-generic",
+    "python": "3.12.14",
+    "note": "laptop; Redis + Postgres in Docker on the same machine; other projects' containers were running, so treat numbers as indicative, not a benchmark"
+  },
+  "params": {
+    "jobs": 50,
+    "heartbeat_ttl": 15,
+    "trials": 3
+  },
+  "results": [
+    {
+      "trial": 1,
+      "jobs_held_by_killed_worker": 50,
+      "recovery_s": 15.26,
+      "final_status_counts": {
+        "succeeded": 50
+      }
+    },
+    {
+      "trial": 2,
+      "jobs_held_by_killed_worker": 50,
+      "recovery_s": 17.27,
+      "final_status_counts": {
+        "succeeded": 50
+      }
+    },
+    {
+      "trial": 3,
+      "jobs_held_by_killed_worker": 50,
+      "recovery_s": 15.25,
+      "final_status_counts": {
+        "succeeded": 50
+      }
+    }
+  ]
+}

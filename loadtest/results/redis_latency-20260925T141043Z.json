@@ -1,0 +1,31 @@
+{
+  "name": "redis_latency",
+  "date_utc": "20260925T141043Z",
+  "commit": "9dd4586",
+  "machine": {
+    "cpu": "12th Gen Intel(R) Core(TM) i5-1240P",
+    "logical_cpus": 16,
+    "mem_gb": 14.8,
+    "os": "Linux 7.0.0-31-generic",
+    "python": "3.12.14",
+    "note": "laptop; Redis + Postgres in Docker on the same machine; other projects' containers were running, so treat numbers as indicative, not a benchmark"
+  },
+  "params": {
+    "jobs": 400,
+    "latency_ms": 100,
+    "workers": 1,
+    "concurrency": 4
+  },
+  "results": [
+    {
+      "added_latency_ms": 0,
+      "drain_seconds": 1.05,
+      "throughput_jobs_per_s": 381.9
+    },
+    {
+      "added_latency_ms": 100,
+      "drain_seconds": 40.75,
+      "throughput_jobs_per_s": 9.8
+    }
+  ]
+}

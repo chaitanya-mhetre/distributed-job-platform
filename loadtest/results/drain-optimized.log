@@ -1,0 +1,6 @@
+{'workers': 1, 'concurrency_per_worker': 50, 'jobs': 20000, 'not_succeeded': 0, 'drain_seconds': 45.42, 'throughput_jobs_per_s': 440.4, 'sdk_submit_rate_jobs_per_s': 521.6}
+{'workers': 2, 'concurrency_per_worker': 50, 'jobs': 20000, 'not_succeeded': 0, 'drain_seconds': 47.59, 'throughput_jobs_per_s': 420.3, 'sdk_submit_rate_jobs_per_s': 481.6}
+{'workers': 4, 'concurrency_per_worker': 50, 'jobs': 20000, 'not_succeeded': 0, 'drain_seconds': 34.84, 'throughput_jobs_per_s': 574.1, 'sdk_submit_rate_jobs_per_s': 310.9}
+{'workers': 8, 'concurrency_per_worker': 50, 'jobs': 20000, 'not_succeeded': 0, 'drain_seconds': 15.77, 'throughput_jobs_per_s': 1268.5, 'sdk_submit_rate_jobs_per_s': 459.6}
+saved /home/chaitanya/Desktop/Growth/projects/distributed-job-platform/loadtest/out/drain-20260925T140202Z.json
+exit=0

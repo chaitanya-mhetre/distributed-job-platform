@@ -1,0 +1,2 @@
+{'workers': 2, 'concurrency_per_worker': 50, 'target_rate': 200.0, 'achieved_submit_rate': 169.7, 'jobs': 3000, 'not_succeeded': 0, 'e2e_latency_ms': {50: 22.6, 95: 1299.1, 99: 2307.0}, 'e2e_latency_max_ms': 4166.4, 'sdk_enqueue_latency_ms': {50: 5764.3, 99: 14648.2}}
+saved /home/chaitanya/Desktop/Growth/projects/distributed-job-platform/loadtest/out/latency-20260925T140417Z.json

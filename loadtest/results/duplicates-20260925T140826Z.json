@@ -1,0 +1,28 @@
+{
+  "name": "duplicates",
+  "date_utc": "20260925T140826Z",
+  "commit": "9dd4586",
+  "machine": {
+    "cpu": "12th Gen Intel(R) Core(TM) i5-1240P",
+    "logical_cpus": 16,
+    "mem_gb": 14.8,
+    "os": "Linux 7.0.0-31-generic",
+    "python": "3.12.14",
+    "note": "laptop; Redis + Postgres in Docker on the same machine; other projects' containers were running, so treat numbers as indicative, not a benchmark"
+  },
+  "params": {
+    "jobs": 1500,
+    "kill_every": 1.0,
+    "seed": 7
+  },
+  "results": [
+    {
+      "jobs": 1500,
+      "workers_killed": 24,
+      "jobs_executed_more_than_once": 264,
+      "total_executions": 1792,
+      "side_effects_more_than_once": 0,
+      "side_effects_missing": 4
+    }
+  ]
+}

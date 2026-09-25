@@ -1,0 +1,52 @@
+Unable to find image 'grafana/k6:latest' locally
+latest: Pulling from grafana/k6
+4f4fb700ef54: Pulling fs layer
+20bef106a16f: Pulling fs layer
+c23814d09c35: Pulling fs layer
+4f4fb700ef54: Already exists
+4f4fb700ef54: Pull complete
+c23814d09c35: Download complete
+44136fa355b3: Already exists
+c23814d09c35: Pull complete
+20bef106a16f: Download complete
+f762dabc449b: Download complete
+20bef106a16f: Pull complete
+Digest: sha256:e66db15b860113878fa74670e31f5e274830b7b6e42c8bff28b2f2d86a257603
+Status: Downloaded newer image for grafana/k6:latest
+
+
+  █ THRESHOLDS 
+
+    http_req_duration
+    ✓ 'p(95)<250' p(95)=14.05ms
+
+    http_req_failed
+    ✓ 'rate<0.01' rate=0.00%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 2001    100.011416/s
+    checks_succeeded...: 100.00% 2001 out of 2001
+    checks_failed......: 0.00%   0 out of 2001
+
+    ✓ 201 created
+
+    HTTP
+    http_req_duration..............: avg=11.38ms min=4.4ms  med=7.36ms max=289.43ms p(90)=12.27ms p(95)=14.05ms
+      { expected_response:true }...: avg=11.38ms min=4.4ms  med=7.36ms max=289.43ms p(90)=12.27ms p(95)=14.05ms
+    http_req_failed................: 0.00%  0 out of 2001
+    http_reqs......................: 2001   100.011416/s
+
+    EXECUTION
+    iteration_duration.............: avg=11.61ms min=4.52ms med=7.58ms max=289.9ms  p(90)=12.58ms p(95)=14.39ms
+    iterations.....................: 2001   100.011416/s
+    vus............................: 1      min=1         max=2 
+    vus_max........................: 50     min=50        max=50
+
+    NETWORK
+    data_received..................: 953 kB 48 kB/s
+    data_sent......................: 358 kB 18 kB/s
+
+
+
