@@ -92,7 +92,9 @@ class Worker:
         self._stopping = asyncio.Event()
         self._weighted = WeightedOrder({p: self.cfg.weights[p] for p in self.cfg.queues})
         self._slots = TypeSlots(
-            relay.broker.redis, relay.broker.keys, ttl_ms=self.cfg.heartbeat_ttl_s * 1000
+            relay.broker.redis,
+            relay.broker.keys,
+            ttl_ms=self.cfg.heartbeat_ttl_s * 1000,
         )
 
     # --- lifecycle ----------------------------------------------------------------------
