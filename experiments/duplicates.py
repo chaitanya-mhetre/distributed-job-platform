@@ -5,10 +5,15 @@ Setup: N short "count" jobs (each increments an executions counter, sleeps 50 ms
 once()-guarded side effect). Three worker processes; every --kill-every seconds we SIGKILL a
 random worker and start a replacement, until all jobs are done.
 
-Reported: jobs executed more than once (expected > 0: that's what at-least-once means), and jobs
-whose side effect happened more than once (expected 0 thanks to once()).
+Reported: jobs executed more than once (expected > 0: that's what at-least-once means), and for
+the side effect, how many keys got it more than once and how many never got it.
 
-    uv run python -m experiments.duplicates --jobs 3000 --kill-every 1.0
+--effect picks the side-effect strategy (see loadtest/app.py `count`):
+  once      once() + Redis write           -> never duplicated, but can be LOST (the gap)
+  atomic    once_atomic() + Postgres write -> key and effect commit together: neither
+  receiver  receiver dedupes by key        -> duplicates are delivered but absorbed
+
+    uv run python -m experiments.duplicates --jobs 1500 --kill-every 1.0 --effect atomic
 """
 
 from __future__ import annotations
@@ -19,14 +24,24 @@ import os
 import random
 import signal
 
+from sqlalchemy import text
+
 from loadtest.common import Report, cleanup, fresh_relay, spawn, stop_all
 
 
 async def run(args: argparse.Namespace) -> Report:
     report = Report("duplicates", vars(args))
     relay = await fresh_relay()
+    async with relay.store.engine.begin() as conn:
+        # No unique constraint on purpose: a duplicated effect would show up as two rows.
+        await conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS bench_effects (key text NOT NULL, job_id uuid NOT NULL)"
+            )
+        )
+        await conn.execute(text("TRUNCATE bench_effects"))
     for i in range(args.jobs):
-        await relay.enqueue("count", {"key": str(i)})
+        await relay.enqueue("count", {"key": str(i), "effect": args.effect})
     hb = ["--heartbeat-s", "0.5", "--heartbeat-ttl-s", "2"]
     workers = [await spawn("worker", relay, "--concurrency", "50", *hb) for _ in range(3)]
     sched = await spawn("scheduler", relay)
@@ -51,14 +66,26 @@ async def run(args: argparse.Namespace) -> Report:
 
     redis, ns = relay.broker.redis, relay.settings.namespace
     executions = {k: int(v) for k, v in (await redis.hgetall(f"{ns}:executions")).items()}
-    effects = {k: int(v) for k, v in (await redis.hgetall(f"{ns}:effects")).items()}
+    if args.effect == "atomic":
+        async with relay.store.engine.connect() as conn:
+            rows = await conn.execute(text("SELECT key, count(*) FROM bench_effects GROUP BY key"))
+            effects = {str(k): int(c) for k, c in rows}
+    elif args.effect == "receiver":
+        # decode_responses=True, so keys are str
+        effects = {str(k): 1 for k in await redis.hkeys(f"{ns}:effects")}  # HSETNX: one per key
+    else:
+        effects = {str(k): int(v) for k, v in (await redis.hgetall(f"{ns}:effects")).items()}
+    deliveries = {k: int(v) for k, v in (await redis.hgetall(f"{ns}:deliveries")).items()}
     result = {
+        "effect": args.effect,
         "jobs": args.jobs,
         "workers_killed": kills,
         "jobs_executed_more_than_once": sum(v > 1 for v in executions.values()),
         "total_executions": sum(executions.values()),
         "side_effects_more_than_once": sum(v > 1 for v in effects.values()),
         "side_effects_missing": args.jobs - len(effects),
+        # receiver mode only: duplicate deliveries the receiver absorbed
+        "duplicate_deliveries_absorbed": sum(v - 1 for v in deliveries.values() if v > 1),
     }
     print(result, flush=True)
     report.results.append(result)
@@ -71,6 +98,7 @@ def main() -> None:
     p.add_argument("--jobs", type=int, default=3000)
     p.add_argument("--kill-every", type=float, default=1.0)
     p.add_argument("--seed", type=int, default=7)
+    p.add_argument("--effect", choices=["once", "atomic", "receiver"], default="once")
     print(f"saved {asyncio.run(run(p.parse_args())).save()}")
 
 

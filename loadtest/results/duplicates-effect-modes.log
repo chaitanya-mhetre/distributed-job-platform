@@ -1,0 +1,17 @@
+# 2026-09-25 busy laptop; 3 workers, one SIGKILLed every --kill-every s (and replaced); commit 6af670c
+## 1500 jobs, kill every 1.0 s
+# 16:06:07 avail=5381MB load=3.99 effect=once
+{'effect': 'once', 'jobs': 1500, 'workers_killed': 6, 'jobs_executed_more_than_once': 190, 'total_executions': 1690, 'side_effects_more_than_once': 0, 'side_effects_missing': 3, 'duplicate_deliveries_absorbed': 0}
+# 16:06:25 avail=4334MB load=5.05 effect=atomic
+{'effect': 'atomic', 'jobs': 1500, 'workers_killed': 4, 'jobs_executed_more_than_once': 113, 'total_executions': 1613, 'side_effects_more_than_once': 0, 'side_effects_missing': 0, 'duplicate_deliveries_absorbed': 0}
+# 16:06:41 avail=4003MB load=5.28 effect=receiver
+{'effect': 'receiver', 'jobs': 1500, 'workers_killed': 4, 'jobs_executed_more_than_once': 106, 'total_executions': 1606, 'side_effects_more_than_once': 0, 'side_effects_missing': 0, 'duplicate_deliveries_absorbed': 21}
+## 4000 jobs, kill every 0.5 s
+# 16:07:19 avail=5382MB load=4.85 effect=once jobs=4000 kill-every=0.5
+{'effect': 'once', 'jobs': 4000, 'workers_killed': 23, 'jobs_executed_more_than_once': 532, 'total_executions': 4575, 'side_effects_more_than_once': 0, 'side_effects_missing': 17, 'duplicate_deliveries_absorbed': 0}
+# 16:07:54 avail=6459MB load=4.76 effect=atomic jobs=4000 kill-every=0.5
+{'effect': 'atomic', 'jobs': 4000, 'workers_killed': 43, 'jobs_executed_more_than_once': 655, 'total_executions': 4727, 'side_effects_more_than_once': 0, 'side_effects_missing': 0, 'duplicate_deliveries_absorbed': 0}
+# 16:09:02 avail=6087MB load=10.49 effect=atomic jobs=4000 kill-every=0.5
+{'effect': 'atomic', 'jobs': 4000, 'workers_killed': 65, 'jobs_executed_more_than_once': 577, 'total_executions': 4606, 'side_effects_more_than_once': 0, 'side_effects_missing': 0, 'duplicate_deliveries_absorbed': 0}
+# 16:10:20 avail=3983MB load=14.15 effect=receiver jobs=4000 kill-every=0.5
+{'effect': 'receiver', 'jobs': 4000, 'workers_killed': 44, 'jobs_executed_more_than_once': 614, 'total_executions': 4657, 'side_effects_more_than_once': 0, 'side_effects_missing': 0, 'duplicate_deliveries_absorbed': 415}
