@@ -8,6 +8,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+from relay.broker import DeadLetter
 from relay.models import Job, JobStatus, Priority
 from relay.store import Attempt
 
@@ -63,3 +64,14 @@ class JobOut(BaseModel):
 class JobPage(BaseModel):
     items: list[JobOut]
     next_cursor: str | None
+
+
+class DeadLetterOut(BaseModel):
+    entry_id: str
+    job_id: UUID
+    type: str
+    error: str
+
+    @classmethod
+    def of(cls, d: DeadLetter) -> DeadLetterOut:
+        return cls(entry_id=d.entry_id, job_id=d.job_id, type=d.job_type, error=d.error)

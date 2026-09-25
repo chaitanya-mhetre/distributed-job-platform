@@ -9,7 +9,7 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 
-from relay.api.schemas import JobIn, JobOut, JobPage
+from relay.api.schemas import DeadLetterOut, JobIn, JobOut, JobPage
 from relay.app import Relay, UnknownJobTypeError
 from relay.models import JobStatus
 
@@ -57,6 +57,31 @@ def create_app(relay: Relay) -> FastAPI:
         if not res.created:
             response.status_code = status.HTTP_200_OK  # idempotent hit: same job as before
         return JobOut.of(res.job)
+
+    @app.post("/v1/jobs/{job_id}:retry", response_model=JobOut, dependencies=auth)
+    async def retry_job(job_id: UUID) -> JobOut:
+        job = await relay.retry(job_id)
+        if job is None:
+            raise HTTPException(409, "only failed or dead jobs can be retried")
+        return JobOut.of(job)
+
+    @app.get("/v1/dlq", response_model=list[DeadLetterOut], dependencies=auth)
+    async def list_dlq(
+        after: str = "-", limit: Annotated[int, Query(ge=1, le=500)] = 50
+    ) -> list[DeadLetterOut]:
+        return [DeadLetterOut.of(d) for d in await relay.broker.list_dead_letters(after, limit)]
+
+    @app.post("/v1/dlq/{entry_id}:replay", response_model=JobOut, dependencies=auth)
+    async def replay_dlq(entry_id: str) -> JobOut:
+        job = await relay.replay_dead_letter(entry_id)
+        if job is None:
+            raise HTTPException(404, "dead letter not found or job not replayable")
+        return JobOut.of(job)
+
+    @app.delete("/v1/dlq/{entry_id}", status_code=204, dependencies=auth)
+    async def delete_dlq(entry_id: str) -> None:
+        if not await relay.broker.delete_dead_letter(entry_id):
+            raise HTTPException(404, "dead letter not found")
 
     @app.get("/v1/jobs/{job_id}", response_model=JobOut, dependencies=auth)
     async def get_job(job_id: UUID) -> JobOut:
