@@ -1,0 +1,2 @@
+# Historical false positive (a Redis key expression, since reflowed); only full-history scans (nightly) see it.
+dfc02278cc199220653cf87c75e368e76c97da4d:src/relay/worker.py:generic-api-key:93
